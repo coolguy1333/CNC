@@ -90,8 +90,8 @@ ENTITIES = {
 SETTINGS_DEFAULTS = {
     "min_rpm": 5000.0,
     "max_rpm": 24000.0,
-    "max_feed_mm": 6000.0,
-    "spindle_w": 1000.0,
+    "max_feed_mm": 4000.0,
+    "spindle_w": 2200.0,
     "defl_limit_mm": 0.02,
     "units": "mm",
 }
