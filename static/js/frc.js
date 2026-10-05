@@ -10,6 +10,10 @@
   const rpmToRad = rpm => (rpm * 2 * Math.PI) / 60;
   const radToRpm = w => (w * 60) / (2 * Math.PI);
   const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+  /** Refuse a calculation whose inputs make no physical sense, instead of dividing by zero. */
+  function need(p, names, what) {
+    for (const n of names) if (!(typeof p[n] === "number" && Number.isFinite(p[n]) && p[n] > 0)) throw new Error(`${what}: ${n} must be a positive number`);
+  }
 
   // ------------------------------------------------------------------ motors (12 V): free speed rpm, stall torque N·m, stall current A, free current A
   const MOTORS = {
@@ -27,7 +31,7 @@
 
   /** Motor limits at battery voltage V (torque and stall current scale with voltage; free current stays). */
   function motorAt(m, V) {
-    const k = (V || 12) / 12;
+    const k = (V > 0 ? V : 12) / 12;
     return { freeW: rpmToRad(m.freeRpm) * k, freeRpm: m.freeRpm * k, stallNm: m.stallNm * k, stallA: m.stallA * k, freeA: m.freeA };
   }
 
@@ -77,8 +81,9 @@
    * p: {motor, n (motors), ratio (motor:wheel), wheelDia (m), mass (kg), eff (0-1), mu, volts, ilim (A per motor, 0 = none)}
    */
   function drivetrain(p) {
+    need(p, ["n", "ratio", "wheelDia", "mass"], "drivetrain");
     const m = p.motor, a = motorAt(m, p.volts), r = p.wheelDia / 2;
-    const eff = p.eff || 0.9;
+    const eff = clamp(p.eff > 0 ? p.eff : 0.9, 0.05, 1);
     const freeW = a.freeW / p.ratio;
     const freeSpeed = freeW * r; // m/s
     const traction = (p.mu || 1) * p.mass * G; // N, all weight on driven wheels
@@ -113,7 +118,8 @@
    * p: {motor, n, ratio, spoolDia, mass, rig, eff, volts, ilim, travel (m)}
    */
   function elevator(p) {
-    const m = p.motor, r = p.spoolDia / 2, rig = p.rig || 1, eff = p.eff || 0.85, n = p.n;
+    need(p, ["n", "ratio", "spoolDia", "mass"], "elevator");
+    const m = p.motor, r = p.spoolDia / 2, rig = p.rig > 0 ? p.rig : 1, eff = clamp(p.eff > 0 ? p.eff : 0.85, 0.05, 1), n = p.n;
     const a = motorAt(m, p.volts);
     const cableForce = (p.mass * G) / rig;                  // N in the cable
     const spoolTorque = cableForce * r;                      // N·m at the spool
@@ -150,9 +156,12 @@
    * Angles are measured up from horizontal, in degrees. p: {motor, n, ratio, length, armMass, loadMass, a0, a1, eff, volts, ilim}
    */
   function arm(p) {
-    const m = p.motor, n = p.n, eff = p.eff || 0.85, L = p.length;
-    const J = (p.armMass * L * L) / 3 + p.loadMass * L * L;                 // kg·m^2 about the pivot
-    const gravArm = (p.armMass * L) / 2 + p.loadMass * L;                    // kg·m, so torque = gravArm * g * cos(theta)
+    need(p, ["n", "ratio", "length"], "arm");
+    const m = p.motor, n = p.n, eff = clamp(p.eff > 0 ? p.eff : 0.85, 0.05, 1), L = p.length;
+    const armMass = Math.max(0, p.armMass || 0), loadMass = Math.max(0, p.loadMass || 0);
+    if (armMass + loadMass <= 0) throw new Error("arm: the arm needs some weight");
+    const J = (armMass * L * L) / 3 + loadMass * L * L;                 // kg·m^2 about the pivot
+    const gravArm = (armMass * L) / 2 + loadMass * L;                    // kg·m, so torque = gravArm * g * cos(theta)
     const holdTorque = gravArm * G;                                          // worst case: arm horizontal
     const a = motorAt(m, p.volts);
     const tauHoldPerMotor = holdTorque / (p.ratio * eff * n);
@@ -182,7 +191,8 @@
    * Returns time to reach the target (s), closed-form for the unlimited-current case, and stored energy.
    */
   function flywheel(p) {
-    const m = p.motor, n = p.n, eff = p.eff || 0.95;
+    need(p, ["n", "ratio", "inertia", "targetRpm"], "flywheel");
+    const m = p.motor, n = p.n, eff = clamp(p.eff > 0 ? p.eff : 0.95, 0.05, 1);
     const a = motorAt(m, p.volts);
     const freeWheelRpm = a.freeRpm / p.ratio;
     const targetW = rpmToRad(p.targetRpm);

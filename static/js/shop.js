@@ -137,8 +137,9 @@
 
   // ------------------------------------------------------------------ speeds
   /** SFM <-> RPM for a diameter in inches */
-  const rpmFromSfm = (sfm, dIn) => (sfm * 12) / (Math.PI * dIn);
-  const sfmFromRpm = (rpm, dIn) => (rpm * Math.PI * dIn) / 12;
+  const posDia = d => { if (!(d > 0) || !isFinite(d)) throw new Error("The diameter must be a positive number"); return d; };
+  const rpmFromSfm = (sfm, dIn) => (sfm * 12) / (Math.PI * posDia(dIn));
+  const sfmFromRpm = (rpm, dIn) => (rpm * Math.PI * posDia(dIn)) / 12;
   const SPEED_PRESETS = {
     aluminum: { label: "Aluminum 6061", sfm: { hss: 250, carbide: 600 }, ipt: d => clampN(0.012 * d, 0.001, 0.005), ipr: 0.005 },
     polycarbonate: { label: "Polycarbonate", sfm: { hss: 300, carbide: 500 }, ipt: d => clampN(0.016 * d, 0.002, 0.008), ipr: 0.005 },
@@ -154,6 +155,7 @@
   }
   const DRILL_SFM = { aluminum: { hss: 250, carbide: 600 }, polycarbonate: { hss: 100, carbide: 200 } };
   function drillSpeed(material, toolMat, dIn) {
+    posDia(dIn);
     const sfm = DRILL_SFM[material][toolMat];
     const rpm = rpmFromSfm(sfm, dIn);
     const ipr = drillFeedPerRev(dIn);
@@ -171,6 +173,7 @@
   /** Bandsaw/hacksaw: teeth per inch so at least `minTeeth` teeth are in the cut. */
   const STANDARD_TPI = [3, 4, 6, 8, 10, 12, 14, 18, 24, 32];
   function sawTpi(thicknessIn, minTeeth) {
+    if (!(thicknessIn > 0) || !isFinite(thicknessIn)) throw new Error("The thickness must be a positive number");
     const need = (minTeeth || 3) / thicknessIn;
     const pick = STANDARD_TPI.find(t => t >= need - 1e-9);
     return { need, tpi: pick || STANDARD_TPI[STANDARD_TPI.length - 1], tooFine: !pick };
@@ -210,6 +213,7 @@
   }
 
   // ------------------------------------------------------------------ cut list (1-D stock)
+  const MAX_PIECES = 3000;
   /**
    * Fit parts onto stock bars. Each cut costs `kerf`; `trim` is squared off each end of a bar and wasted.
    * parts: [{len, qty, name}]. Returns {bars, count, used, waste, utilization, errors}.
@@ -219,6 +223,8 @@
     const kerf = p.kerf || 0;
     const errors = [];
     const items = [];
+    const wanted = p.parts.reduce((n, part) => n + Math.max(0, Math.floor(part.qty || 1)), 0);
+    if (wanted > MAX_PIECES) return { bars: [], count: 0, used: 0, waste: 0, utilization: 0, cap, errors: [`That is ${wanted} pieces; the limit is ${MAX_PIECES}. Split the job up.`] };
     for (const part of p.parts) {
       const qty = Math.max(0, Math.floor(part.qty || 1));
       if (!(part.len > 0)) { errors.push("A part has no length."); continue; }

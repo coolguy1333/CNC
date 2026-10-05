@@ -58,7 +58,7 @@
       hint: "How much spoilboard to skim off. 0.5 mm (0.020 in) is plenty for a flatten." },
     { id: "through", type: "check", label: "Through-cut", checkLabel: "Cut through: go a little into the spoilboard", def: true, show: v => v.material !== "spoilboard" },
     { id: "extra", label: "Extra depth into spoilboard", type: "len", def: 0.2, show: v => v.material !== "spoilboard" && v.through },
-    { id: "cool", label: "Cooling", type: "select", def: "mist", options: COOL, show: v => v.material !== "spoilboard" },
+    { id: "cool", label: "Cooling", type: "select", wide: true, def: "mist", options: COOL, show: v => v.material !== "spoilboard" },
     { id: "agg", label: "How hard to push", type: "seg", number: true, def: 1, options: [[0.8, "Careful"], [1, "Normal"], [1.15, "Push"]] },
     { id: "stick", label: "Stick-out (0 = automatic)", type: "len", def: 0, show: v => v.material !== "spoilboard", hint: "How far the tool sticks out of the collet. Shorter is stiffer." },
     { id: "cutLen", label: "Toolpath length for a time estimate", type: "len", def: 0, hint: "Total length the cutter travels, per pass (CAM shows it). 0 = skip." },
@@ -112,6 +112,12 @@
         const face = vals.material === "spoilboard";
         tool = chosenTool(vals, face);
         const out = $("#out", root);
+        const chk = App.checkVals(cncFields, vals);
+        if (chk.issues.length) {
+          out.innerHTML = html`<h2>Recommended settings</h2>${chk.issues.map(t => note("info", t))}`.s;
+          $("#testedBox", root).innerHTML = "";
+          return;
+        }
         if (!tool) {
           out.innerHTML = html`<h2>Recommended settings</h2><p class="mut">${face ? "Add a facemill in the Tool Library, or enter its size." : "Pick an endmill, or choose “Other size…” and enter its diameter."}</p>`.s;
           $("#testedBox", root).innerHTML = "";
@@ -164,7 +170,7 @@
           ${tiles([
             tile("Spindle speed", rpmFmt(res.rpm), `${Math.round(res.sfm)} SFM`, "main"),
             tile("Cutting feed", feedA, feedB, "main"),
-            tile("Max stepdown", U.fmt("len", res.doc, 4), res.passes ? `${res.passes} pass${res.passes > 1 ? "es" : ""} of ${U.fmt("len", res.docPass, 4)} for ${U.fmt("len", total, 4)}` : "set a depth to count passes", "main"),
+            tile("Max stepdown", U.fmt("len", res.doc, 4), res.passes ? `${res.passes} pass${res.passes > 1 ? "es" : ""} of ${U.fmt("len", res.docPass, 4)} for ${U.fmt("len", total, 4)}${!face && vals.through && vals.extra > 0 ? ` (${U.fmt("len", thicknessMm, 4)} stock + ${U.fmt("len", vals.extra, 3)} into the spoilboard)` : ""}` : "set a depth to count passes", "main"),
             tile(face ? "Stepover" : "Stepover (width of cut)", stepover, stepSub),
             tile("Plunge feed", plA, plB),
             tile("Ramp feed", rpA, `${res.rampAngle}° ramp${res.rampLength ? " · " + U.fmt("len", res.rampLength, 2) + " per pass" : ""}`),
@@ -272,14 +278,18 @@
       function update() {
         App.persist("spoil", vals);
         const out = $("#out", root);
+        const chk = App.checkVals(specs, vals);
+        if (chk.issues.length) { out.innerHTML = html`<h2>Plan</h2>${chk.issues.map(t => note("info", t))}`.s; return; }
         const tool = chosenTool({ toolId: vals.toolId, cDia: vals.cDia, cFlutes: vals.cFlutes, cMat: "hss" }, true);
         if (!tool || !(vals.ax > 0) || !(vals.ay > 0)) { out.innerHTML = html`<h2>Plan</h2><p class="mut">Enter the cutter and the board size.</p>`.s; return; }
         const tested = tool.id ? testedFor(tool.id, "spoilboard", "surface") : [];
         const recipe = tested[0] || null;
-        const step = clamp01(vals.stepover / 100);
+        const step = clamp01((vals.stepover > 0 ? vals.stepover : 70) / 100);
         const res = Cnc.recommend({ material: "spoilboard", tool, total_mm: Math.max(0.01, vals.depth || 0.5), agg: vals.agg || 1, machine: App.machine(), recipe, stepover: step });
         const mk = (w, l) => Cnc.spoilboardPlan({ diameter: tool.actual_mm, w, l, stepover: step, margin: vals.margin || 0, feed: res.feed, depth: vals.depth || 0.5, docPerPass: res.docPass });
-        const planY = mk(vals.ax, vals.ay), planX = mk(vals.ay, vals.ax);   // lines along Y step across X, and vice versa
+        let planY, planX;
+        try { planY = mk(vals.ax, vals.ay); planX = mk(vals.ay, vals.ax); }   // lines along Y step across X, and vice versa
+        catch (e) { out.innerHTML = html`<h2>Plan</h2>${note("bad", e.message)}`.s; return; }
         const alongY = vals.along === "y" || (vals.along === "auto" && planY.totalMin <= planX.totalMin);
         const plan = alongY ? planY : planX;
         const across = alongY ? vals.ax : vals.ay, along = alongY ? vals.ay : vals.ax;
@@ -356,7 +366,7 @@
   ];
   const fitFields = [
     { id: "nom", label: "Part or bearing size", type: "len", def: 28.575, hint: "For a bearing, its outside diameter." },
-    { id: "fit", label: "How should it fit?", type: "select", def: "press", options: Shop.FITS.map(f => [f.id, f.label]) },
+    { id: "fit", label: "How should it fit?", type: "select", wide: true, def: "press", options: Shop.FITS.map(f => [f.id, f.label]) },
   ];
   const BEARINGS = [
     ["1/2 in hex flanged (FR8ZZ-HexHD)", 1.125, 0.312, "0.062 in flange. Common FRC hex bearing."],
@@ -389,6 +399,8 @@
         App.persist("holes", hv);
         const tool = chosenTool({ toolId: hv.toolId, cDia: hv.cDia }, false);
         const out = $("#hOut", root);
+        const chk = App.checkVals(holeFields, hv);
+        if (chk.issues.length) { out.innerHTML = chk.issues.map(t => note("info", t)).join(""); return; }
         if (!tool || !(hv.hole > 0)) { out.innerHTML = ""; return; }
         const r = Cnc.holePath({ hole: hv.hole, tool: tool.actual_mm, feed: hv.feed });
         out.innerHTML = r.ok ? html`${tiles([

@@ -59,7 +59,7 @@
     fields: [...mechCommon({ motor: "neo", n: 2, ratio: 20, ratioHint: "Motor turns per spool turn." }),
       { id: "spool", label: "Spool or pulley diameter", type: "len", def: 38.1 },
       { id: "mass", label: "Load being lifted", type: "mass", def: 6.8 },
-      { id: "rig", label: "Rigging", type: "select", number: true, def: 1, options: [[1, "Direct / 1 stage"], [2, "2-stage cascade or continuous"], [3, "3-stage"]], hint: "How far the carriage moves for each unit of cable pulled." },
+      { id: "rig", label: "Rigging", type: "select", wide: true, number: true, def: 1, options: [[1, "Direct / 1 stage"], [2, "2-stage cascade or continuous"], [3, "3-stage"]], hint: "How far the carriage moves for each unit of cable pulled." },
       { id: "travel", label: "Travel distance", type: "len", def: 1000 }],
     compute(v) {
       const bad = needMotors(v);
@@ -84,8 +84,8 @@
       { id: "length", label: "Arm length (pivot to end)", type: "len", def: 600 },
       { id: "armMass", label: "Arm weight", type: "mass", def: 2.7 },
       { id: "loadMass", label: "Weight at the end (gripper, game piece)", type: "mass", def: 1.4 },
-      { id: "a0", label: "Start angle", type: "num", unit: "° above horizontal", def: 0, dp: 0 },
-      { id: "a1", label: "End angle", type: "num", unit: "° above horizontal", def: 90, dp: 0 }],
+      { id: "a0", label: "Start angle", type: "num", unit: "° above horizontal", def: 0, dp: 0, allowNegative: true, min: -90, max: 135 },
+      { id: "a1", label: "End angle", type: "num", unit: "° above horizontal", def: 90, dp: 0, allowNegative: true, min: -90, max: 135 }],
     compute(v) {
       const bad = needMotors(v);
       if (bad) return bad;
@@ -222,7 +222,7 @@
       return html`<h2>Battery under load</h2>${tiles([
         tile("Terminal voltage", fmt(vt, 2) + " V", `${fmt(v.voc - vt, 2)} V of sag at ${fmt(v.amps, 0)} A`, vt < 7 ? "main bad" : "main"),
         tile("Power lost inside the battery", fmt(v.amps * v.amps * v.rint, 0) + " W", ""),
-      ])}<div class="notes">${vt < 7 ? note("bad", "That's low enough to brown out the roboRIO (default brownout is around 6.8 V). Cut current with limits, or use a fresher battery.") : vt < 9 ? note("warn", "Sagging this far makes motors weaker and risks a brownout in a hard push.") : note("ok", "The battery holds up fine at this current.")}
+      ])}<div class="notes">${vt < 7 ? note("bad", "That's low enough to brown out the controller (the roboRIO 2 browns out at 6.75 V by default, the roboRIO 1 at 6.3 V). Cut current with limits, or use a fresher battery.") : vt < 9 ? note("warn", "Sagging this far makes motors weaker and risks a brownout in a hard push.") : note("ok", "The battery holds up fine at this current.")}
         ${note("info", "An older or cold battery has more internal resistance. Add up the current of everything that can run at once, and compare.")}</div>`;
     },
   });
@@ -280,7 +280,7 @@
           </form>
           ${list.length ? table(["Item", "Each", "Qty", "Total", ""], list.map((i, n) => [i.name, U.fmt("mass", i.kg, 3), i.qty, U.fmt("mass", i.kg * i.qty, 3), html`<button class="btn sm del" data-del="${n}" aria-label="Remove ${i.name}">Remove</button>`])) : html`<p class="mut">Nothing yet. Add items above, or use “Add to weight budget” in Weight &amp; Stock.</p>`}
           <div class="bar actions"><button class="btn" id="copyB">Copy list</button><button class="btn" id="csvB">Download CSV</button><button class="btn del" id="clearB">Clear all</button></div>
-          ${note("info", "Not counted toward the limit: the bumpers and the battery (and its half of the Anderson connector). With bumpers and battery the robot may total up to 135 lb in the 2025 and 2026 seasons. Always check the current manual.")}
+          ${note("info", "Not counted toward the limit: the bumpers and the battery (and its half of the Anderson connector). Robot plus bumpers is also capped, at 135 lb in the 2025 and 2026 seasons. Always check the current manual.")}
         </section>`.s;
       $("#meterFill", root).style.width = pct + "%";
       const save = () => { store.set("budget", list); App.rerender(); };
@@ -293,7 +293,7 @@
       };
       $$("[data-del]", root).forEach(b => b.onclick = () => { list.splice(+b.dataset.del, 1); save(); });
       $("#copyB", root).onclick = () => copyText(list.map(i => `${i.name}\t${fmt(U.show("mass", i.kg), 3)} ${U.unit("mass")}\t×${i.qty}`).join("\n") + `\nTotal\t${fmt(U.show("mass", total), 2)} ${U.unit("mass")}`);
-      $("#csvB", root).onclick = () => download("weight-budget.csv", ["Item,Each kg,Qty,Total kg", ...list.map(i => `"${i.name.replace(/"/g, '""')}",${fmt(i.kg, 4)},${i.qty},${fmt(i.kg * i.qty, 4)}`)].join("\n"), "text/csv");
+      $("#csvB", root).onclick = () => download("weight-budget.csv", ["Item,Each kg,Qty,Total kg", ...list.map(i => `"${(/^[=+\-@\t\r]/.test(i.name) ? "'" + i.name : i.name).replace(/"/g, '""')}",${fmt(i.kg, 4)},${i.qty},${fmt(i.kg * i.qty, 4)}`)].join("\n"), "text/csv");
       $("#clearB", root).onclick = async () => { if (list.length && await confirmDialog("Remove every item from the budget?")) { store.set("budget", []); App.rerender(); } };
     },
   });

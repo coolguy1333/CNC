@@ -295,6 +295,8 @@ INSERT INTO settings VALUES ('seeded','1'),('seed_version','5'),('max_rpm','2000
             self.assertEqual(sorted(r["material"] for r in seeded), ["aluminum", "polycarbonate"])
             self.assertEqual(s["max_rpm"], 20000)  # their machine setting survives
             self.assertTrue(server.list_backups())  # a snapshot was taken before converting
+            with server.connect() as c:
+                self.assertEqual(c.execute("SELECT COUNT(*) c FROM maintenance").fetchone()["c"], 6, "upgrades get the suggested maintenance tasks too")
         finally:
             server.DATA_DIR = old_dir
 
@@ -362,6 +364,23 @@ class SecurityTest(Base):
         finally:
             server.ALLOWED_HOSTS = set()
 
+    def test_content_type_must_be_exactly_json(self):
+        body = dict(name="ct")
+        self.assertEqual(self.req("POST", "/api/inventory", body, headers={"Content-Type": "text/plain; application/json"})[0], 400)
+        self.assertEqual(self.req("POST", "/api/inventory", body, headers={"Content-Type": "application/jsonx"})[0], 400)
+        self.assertEqual(self.req("POST", "/api/inventory", body, headers={"Content-Type": "multipart/form-data; boundary=application/json"})[0], 400)
+        self.assertEqual(self.req("POST", "/api/inventory", body, headers={"Content-Type": "Application/JSON; charset=utf-8"})[0], 201)
+
+    def test_client_ip_only_trusts_proxies(self):
+        self.assertEqual(server.client_ip("10.1.2.3", "203.0.113.9"), "203.0.113.9")
+        self.assertEqual(server.client_ip("127.0.0.1", "203.0.113.9"), "203.0.113.9")
+        self.assertEqual(server.client_ip("8.8.8.8", "203.0.113.9"), "8.8.8.8")   # a direct public client can't pick its own address
+        self.assertEqual(server.client_ip("10.1.2.3", "not-an-ip"), "10.1.2.3")
+        self.assertEqual(server.client_ip("10.1.2.3", None), "10.1.2.3")
+
+    def test_server_header_does_not_leak_versions(self):
+        self.assertEqual(self.req("GET", "/api/health")[2]["Server"].strip(), "ShopToolkit")
+
     def test_sql_injection_is_just_text(self):
         evil = "x'); DROP TABLE tools;--"
         st, out, _ = self.req("POST", "/api/inventory", dict(name=evil))
@@ -369,6 +388,59 @@ class SecurityTest(Base):
         self.assertTrue(self.state()["tools"])
         self.assertIn(evil, [i["name"] for i in self.state()["inventory"]])
         self.assertEqual(self.req("DELETE", "/api/tools/1;DROP")[0], 405)
+
+
+class LoadTest(Base):
+    def test_parallel_writes_and_reads_stay_consistent(self):
+        errors, created = [], []
+
+        def worker(n):
+            try:
+                for i in range(20):
+                    st, out, _ = self.req("POST", "/api/inventory", dict(name=f"w{n}-{i}", qty=i))
+                    if st != 201:
+                        errors.append((st, out))
+                    else:
+                        created.append(out["id"])
+                    if self.req("GET", "/api/state")[0] != 200:
+                        errors.append("read failed")
+            except Exception as e:  # noqa: BLE001
+                errors.append(repr(e))
+
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+        [t.start() for t in threads]
+        [t.join(60) for t in threads]
+        self.assertEqual(errors, [])
+        self.assertEqual(len(created), 160)
+        self.assertEqual(len(set(created)), 160)
+        self.assertEqual(len(self.req("GET", "/api/inventory")[1]), 160)
+
+    def test_connection_cap_answers_503_instead_of_piling_up(self):
+        import socket
+        old = server.Server.max_connections
+        server.Server.max_connections = 2
+        srv = server.make_server("127.0.0.1", 0)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        idle = [socket.create_connection(("127.0.0.1", port)) for _ in range(2)]   # hold both slots without sending anything
+        try:
+            import time
+            time.sleep(0.3)
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", "/api/health")
+            self.assertEqual(c.getresponse().status, 503)
+            c.close()
+        finally:
+            for s in idle:
+                s.close()
+            time.sleep(0.2)
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", "/api/health")
+            self.assertEqual(c.getresponse().status, 200, "slots are released when clients leave")
+            c.close()
+            srv.shutdown()
+            srv.server_close()
+            server.Server.max_connections = old
 
 
 class StaticTest(Base):

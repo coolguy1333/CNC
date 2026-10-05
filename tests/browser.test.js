@@ -338,3 +338,158 @@ test("a second visitor sees changes made by the first", { skip }, async () => {
   assert.ok(made.id);
   await a.ctx.close(); await b.ctx.close();
 });
+
+test("garbage in the boxes never breaks a calculator page", { skip }, async () => {
+  const page = await newPage();
+  const ids = await pageIds(page);
+  const calculators = ids.filter(id => !["tools", "tested", "joblog", "inventory", "maint", "settings", "safety", "omio", "trouble", "materials", "links", "budget"].includes(id));
+  const weird = ["", "0", "-5", "1e9", "0.0001"];
+  const bad = /NaN|Infinity|undefined|\[object|null/;
+  const outputOf = () => page.evaluate(() => document.querySelector("#main").innerText);
+  for (const id of calculators) {
+    await go(page, id);
+    const nums = page.locator('#main input[type="number"]');
+    const n = await nums.count();
+    for (let i = 0; i < n; i++) {
+      const box = nums.nth(i);
+      if (!(await box.isVisible())) continue;
+      const original = await box.inputValue();
+      for (const w of weird) {
+        await box.fill(w);
+        const text = await outputOf();
+        assert.ok(!bad.test(text), `${id}: typing "${w}" into box ${i} shows ${(bad.exec(text) || [])[0]}`);
+      }
+      await box.fill(original);
+    }
+    const selects = page.locator("#main select");
+    const m = await selects.count();
+    for (let i = 0; i < m; i++) {
+      const sel = selects.nth(i);
+      if (!(await sel.isVisible())) continue;
+      const original = await sel.inputValue();
+      const count = await sel.locator("option").count();
+      for (let k = 0; k < Math.min(count, 40); k++) {
+        await sel.selectOption({ index: k });
+        const text = await outputOf();
+        assert.ok(!bad.test(text), `${id}: choosing option ${k} of select ${i} shows ${(bad.exec(text) || [])[0]}`);
+      }
+      await sel.selectOption(original);
+    }
+    const segs = page.locator('#main .seg:not(#unitSeg) button');
+    const sc = await segs.count();
+    for (let i = 0; i < sc; i++) {
+      if (!(await segs.nth(i).isVisible())) continue;
+      await segs.nth(i).click();
+      const text = await outputOf();
+      assert.ok(!bad.test(text), `${id}: segment button ${i} shows ${(bad.exec(text) || [])[0]}`);
+    }
+  }
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("tested settings: a new one shows up in the calculator and can be picked", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "tested");
+  await page.click("#add");
+  await page.waitForSelector("#dlg[open]");
+  await page.selectOption('#dlg [data-f="tool_id"]', { label: "Thrifty Bot 5 mm" });
+  await page.selectOption('#dlg [data-f="material"]', "aluminum");
+  await page.fill('#dlg [data-f="label"]', "Browser preset");
+  await page.fill('#dlg [data-f="rpm"]', "18000");
+  await page.fill('#dlg [data-f="feed_mm"]', "40");                 // 40 in/min typed in inches
+  await page.selectOption('#dlg [data-f="rating"]', "5");
+  await page.click('#dlg button[type="submit"]');
+  await page.waitForFunction(() => !document.querySelector("#dlg").open);
+  const made = (await api(page, "GET", "api/state")).recipes.find(r => r.label === "Browser preset");
+  assert.ok(made && made.rpm === 18000 && Math.abs(made.feed_mm - 1016) < 0.5, JSON.stringify(made));
+  await go(page, "cnc");
+  await page.waitForSelector("#out .tile");
+  // best-rated preset wins, and the picker lists both
+  assert.match(await tileText(page, "Spindle speed"), /18,000 rpm/);
+  assert.match(await tileText(page, "Cutting feed"), /40 in\/min/);
+  assert.equal(await page.locator("#preset option").count(), 2);
+  const stock = await page.$$eval("#preset option", os => os.find(o => o.textContent.startsWith("Aluminum (")).value);
+  await page.selectOption("#preset", stock);
+  assert.match(await tileText(page, "Spindle speed"), /24,000 rpm/);
+  await api(page, "DELETE", "api/recipes/" + made.id);
+  await page.ctx.close();
+});
+
+test("maintenance: new tasks are not overdue, and Done today starts the clock", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "maint");
+  assert.equal(await page.locator("tr.low").count(), 0, "nothing is overdue on a fresh install");
+  assert.equal(await page.locator('#nav [data-badge="maint"]').isVisible(), false);
+  await page.locator('button[data-act="done"]').first().click();
+  await page.waitForSelector("text=Due in");
+  const state = await api(page, "GET", "api/state");
+  assert.ok(state.maintenance.some(m => m.last_done));
+  // an old date makes it overdue
+  const task = state.maintenance.find(m => m.interval_days > 0);
+  await api(page, "PUT", "api/maintenance/" + task.id, { last_done: "2020-01-01" });
+  await go(page, "cnc");
+  await go(page, "maint");
+  await page.waitForSelector("tr.low");
+  assert.equal(await page.locator('#nav [data-badge="maint"]').innerText(), "1");
+  await api(page, "PUT", "api/maintenance/" + task.id, { last_done: "" });
+  await page.ctx.close();
+});
+
+test("backups: back up now, restore a snapshot, restore from a file", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "settings");
+  await page.click("#bnow");
+  await page.waitForSelector("[data-restore]");
+  const marker = await api(page, "POST", "api/inventory", { name: "after the snapshot" });
+  await page.reload();
+  await page.waitForSelector("[data-restore]");
+  await page.locator("[data-restore]").first().click();                 // newest snapshot: taken before the marker existed
+  await page.waitForFunction(async () => !(await (await fetch("/api/state")).json()).inventory.some(i => i.name === "after the snapshot"));
+  assert.ok(marker.id);
+  // a downloaded export can be restored from a file
+  const exported = await api(page, "GET", "api/export");
+  exported.tools = exported.tools.filter(t => t.name !== "6 mm endmill");
+  exported.recipes = exported.recipes.filter(r => exported.tools.some(t => t.id === r.tool_id));
+  const file = path.join(dataDir, "restore-me.json");
+  fs.writeFileSync(file, JSON.stringify(exported));
+  await go(page, "settings");
+  await page.setInputFiles("#bfile", file);
+  await page.waitForFunction(async () => !(await (await fetch("/api/state")).json()).tools.some(t => t.name === "6 mm endmill"));
+  await page.click("[data-restore] >> nth=0");                           // and the pre-import snapshot undoes it
+  await page.waitForFunction(async () => (await (await fetch("/api/state")).json()).tools.some(t => t.name === "6 mm endmill"));
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("job log: CSV export defuses spreadsheet formulas", { skip }, async () => {
+  const page = await newPage({ acceptDownloads: true });
+  await go(page, "cnc");
+  const made = await api(page, "POST", "api/joblog", { name: '=HYPERLINK("http://evil.example","click")', operator: "+cmd", notes: "-1+1", date: "2026-01-02" });
+  await go(page, "joblog");
+  await page.waitForSelector("#csv");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.click("#csv")]);
+  const text = fs.readFileSync(await download.path(), "utf8");
+  assert.ok(text.includes("'=HYPERLINK"), "formula cell is prefixed with an apostrophe: " + text);
+  assert.ok(!/(^|,)=HYPERLINK/m.test(text));
+  assert.ok(text.includes("'+cmd"));
+  await api(page, "DELETE", "api/joblog/" + made.id);
+  await page.ctx.close();
+});
+
+test("a tool deleted elsewhere doesn't break the calculator", { skip }, async () => {
+  const a = await newPage(), b = await newPage();
+  await go(a, "cnc");
+  const made = await api(a, "POST", "api/tools", { name: "Doomed 4 mm", nominal_mm: 4, actual_mm: 3.9, flutes: 1, flute_len_mm: 12, overall_mm: 45 });
+  await go(b, "cnc");
+  await b.selectOption("#f_toolId", String(made.id));
+  assert.match(await tileText(b, "Spindle speed"), /rpm/);
+  await api(a, "DELETE", "api/tools/" + made.id);
+  await go(b, "weight");
+  await go(b, "cnc");                                                   // navigating refreshes shared data
+  await b.waitForSelector("#out .tile");
+  assert.match(await tileText(b, "Spindle speed"), /rpm/);
+  assert.ok(!(await b.locator("#f_toolId option", { hasText: "Doomed" }).count()));
+  assert.deepEqual(b.problems, []);
+  await a.ctx.close(); await b.ctx.close();
+});

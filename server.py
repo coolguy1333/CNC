@@ -11,6 +11,7 @@ Run:  DATA_DIR=./data python3 server.py     (http://localhost:8080)
 import contextlib
 import datetime
 import gzip
+import ipaddress
 import json
 import math
 import mimetypes
@@ -293,14 +294,13 @@ def init_db(backup=True):
             backup_db("startup")
         with connect() as con:
             create_tables(con)
-            fresh = get_raw_setting(con, "schema") is None and con.execute("SELECT COUNT(*) c FROM tools").fetchone()["c"] == 0
             migrate_v1(con)
             if get_raw_setting(con, "rev") is None:
                 set_setting(con, "rev", 0)
             if int(get_raw_setting(con, "seed_version", "0")) < SEED_VERSION:
                 upgrade_seed(con)
                 seed_defaults(con)
-                if fresh:
+                if con.execute("SELECT COUNT(*) c FROM maintenance").fetchone()["c"] == 0:   # new installs and upgrades from version 1
                     for task, days, notes in SEED_MAINTENANCE:
                         insert(con, "maintenance", clean("maintenance", dict(
                             task=task, interval_days=days, notes=("Suggested: " + notes) if notes else "Suggested task.")))
@@ -611,6 +611,17 @@ def allow_write(ip):
 _static_cache = {}
 
 
+def client_ip(peer, forwarded):
+    """The address to rate-limit. X-Real-IP is believed only when the connection comes from a private/loopback address
+    (a reverse proxy), so a direct client can't dodge the limit by inventing the header."""
+    try:
+        if forwarded and not ipaddress.ip_address(peer).is_global:   # loopback, private, link-local, CGNAT: a proxy on our own network
+            return str(ipaddress.ip_address(forwarded.strip()))
+    except ValueError:
+        pass
+    return peer
+
+
 def _no_constants(c):
     raise ValueError("bad JSON constant " + c)
 
@@ -626,8 +637,10 @@ class Handler(BaseHTTPRequestHandler):
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
 
     # -- helpers --
+    sys_version = ""  # don't announce the Python version in the Server header
+
     def ip(self):
-        return self.headers.get("X-Real-IP") or self.client_address[0]
+        return client_ip(self.client_address[0], self.headers.get("X-Real-IP"))
 
     def https(self):
         return self.headers.get("X-Forwarded-Proto") == "https"
@@ -715,7 +728,9 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def json_body(self):
-        if "application/json" not in self.headers.get("Content-Type", ""):
+        # exactly application/json (parameters like charset are fine). A substring match would let a cross-site form
+        # smuggle the words into a "simple" content type such as text/plain; application/json.
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             raise ValidationError("Content-Type must be application/json")
         try:
             return json.loads(self._raw or b"null", parse_constant=_no_constants)
@@ -912,9 +927,34 @@ class Handler(BaseHTTPRequestHandler):
         return 405, {"error": "Method not allowed"}
 
 
+class Server(ThreadingHTTPServer):
+    """Threaded server with a cap on simultaneous connections, so a pile of slow clients can't exhaust memory."""
+    daemon_threads = True
+    request_queue_size = 64
+    max_connections = 128
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self._slots = threading.BoundedSemaphore(self.max_connections)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            with contextlib.suppress(OSError):
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 2\r\nContent-Length: 0\r\n\r\n")
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def make_server(host, port):
     init_db()
-    return ThreadingHTTPServer((host, port), Handler)
+    return Server((host, port), Handler)
 
 
 def main():

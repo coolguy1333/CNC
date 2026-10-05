@@ -125,7 +125,7 @@
     if (f.type === "select") {
       input = html`<select id="${id}" data-f="${f.id}">${opts.map(([val, label]) => html`<option value="${val}"${String(val) === String(v) ? " selected" : ""}>${label}</option>`)}</select>`;
     } else if (f.type === "seg") {
-      input = html`<div class="seg" role="radiogroup" aria-label="${f.label}" data-f="${f.id}">${opts.map(([val, label]) => html`<button type="button" role="radio" aria-checked="${String(val) === String(v)}" data-v="${val}" class="${String(val) === String(v) ? "on" : ""}">${label}</button>`)}</div>`;
+      input = html`<div class="seg" role="group" aria-label="${f.label}" data-f="${f.id}">${opts.map(([val, label]) => html`<button type="button" aria-pressed="${String(val) === String(v)}" data-v="${val}" class="${String(val) === String(v) ? "on" : ""}">${label}</button>`)}</div>`;
     } else if (f.type === "check") {
       input = html`<label class="check"><input type="checkbox" id="${id}" data-f="${f.id}"${v ? " checked" : ""}> <span>${f.checkLabel || f.label}</span></label>`;
     } else if (f.type === "textarea") {
@@ -175,7 +175,7 @@
       if (id == null) return;
       const spec = specs.find(s => s.id === id);
       if (spec.type === "seg") {
-        $$("button", e.target.closest("[data-f]")).forEach(b => { const on = b.dataset.v === String(vals[id]); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+        $$("button", e.target.closest("[data-f]")).forEach(b => { const on = b.dataset.v === String(vals[id]); b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
       }
       refresh();
       onChange && onChange(id);
@@ -192,6 +192,26 @@
     return { refresh };
   }
   const defaultsOf = specs => Object.fromEntries(specs.map(s => [s.id, s.def]));
+  const isNumericSpec = f => f.type === "num" || f.type === "int" || isKind(f.type);
+  /**
+   * Checks the visible number boxes before a page calculates.
+   * A blank box is `null`. Boxes whose default is 0 (or that say `optional`) mean "off / automatic", so blank is 0;
+   * any other blank box, a negative number (unless `allowNegative`), or a value outside min/max stops the calculation with a plain message.
+   * Returns {issues: [text], vals: cleaned copy}.
+   */
+  function checkVals(specs, vals) {
+    const clean = Object.assign({}, vals), issues = [];
+    for (const f of specs) {
+      if (!isNumericSpec(f) || (f.show && !f.show(vals))) continue;
+      const v = vals[f.id];
+      if (v == null) { if (f.def === 0 || f.optional) clean[f.id] = 0; else issues.push(`Fill in “${f.label}”.`); continue; }
+      if (!isFinite(v)) issues.push(`“${f.label}” isn't a usable number.`);
+      else if (v < 0 && !f.allowNegative) issues.push(`“${f.label}” can't be negative.`);
+      else if (f.min != null && v < f.min - 1e-12) issues.push(`“${f.label}” must be at least ${isKind(f.type) ? U.fmt(f.type, f.min) : fmt(f.min, 4)}.`);
+      else if (f.max != null && v > f.max + 1e-12) issues.push(`“${f.label}” must be at most ${isKind(f.type) ? U.fmt(f.type, f.max) : fmt(f.max, 4)}.`);
+    }
+    return { issues, vals: clean };
+  }
 
   // ------------------------------------------------------------------ dialogs
   /**
@@ -241,8 +261,9 @@
         const update = () => {
           App.persist(cfg.id, vals);
           const out = $("#out", root);
-          out.innerHTML = String(cfg.compute(vals) || "");
-          if (cfg.after) cfg.after(out, vals, root);
+          const chk = checkVals(specs, vals);
+          setHtml(out, chk.issues.length ? raw(chk.issues.map(t => note("info", t)).join("")) : cfg.compute(chk.vals) || "");
+          if (cfg.after && !chk.issues.length) cfg.after(out, chk.vals, root);
         };
         const draw = () => {
           $("#form", root).innerHTML = fieldsHtml(specs, vals).s;
@@ -254,6 +275,6 @@
     });
   }
 
-  Object.assign(App, { calcPage, Raw, raw, esc, html, $, $$, setHtml, fmt, fmtInput, group, KINDS, U, store, toast, copyText, api, download, tile, tiles, note, kvTable, table,
+  Object.assign(App, { calcPage, checkVals, Raw, raw, esc, html, $, $$, setHtml, fmt, fmtInput, group, KINDS, U, store, toast, copyText, api, download, tile, tiles, note, kvTable, table,
     fieldHtml, fieldsHtml, readControl, bindForm, defaultsOf, openForm, friendlyError, confirmDialog, isKind });
 })();

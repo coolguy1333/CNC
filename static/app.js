@@ -99,8 +99,8 @@
   }
   /** days since last done / due state for a maintenance task */
   App.maintStatus = m => {
-    if (!m.interval_days) return { due: null, overdue: false, text: m.last_done ? "As needed" : "As needed" };
-    if (!m.last_done) return { due: null, overdue: true, text: "Never done" };
+    if (!m.interval_days) return { due: null, overdue: false, text: "As needed" };
+    if (!m.last_done) return { due: null, overdue: false, never: true, text: "Not started" };
     const due = new Date(m.last_done + "T00:00:00");
     due.setDate(due.getDate() + m.interval_days);
     const days = Math.round((due - new Date(new Date().toDateString())) / 86400000);

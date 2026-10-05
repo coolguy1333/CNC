@@ -9,7 +9,8 @@
   const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
   const toolName = id => { const t = id ? App.toolById(id) : null; return t ? t.name : id ? "(deleted tool)" : "–"; };
   const toolOptions = (withNone) => [...(withNone ? [[0, "Not sure / not listed"]] : []), ...(App.data.tools || []).slice().sort((a, b) => a.nominal_mm - b.nominal_mm).map(t => [t.id, t.name])];
-  const csvCell = v => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  // Spreadsheets run cells that start with = + - @ as formulas, and notes are typed by anyone: defuse them with a leading apostrophe.
+  const csvCell = v => { let s = String(v == null ? "" : v); if (/^[=+\-@\t\r]/.test(s) && isNaN(Number(s))) s = "'" + s; return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
 
   /**
    * One list page with add / edit / copy / delete in a dialog.
@@ -224,11 +225,14 @@
     sort: (a, b) => { const sa = App.maintStatus(a), sb = App.maintStatus(b); return (sa.overdue ? 0 : 1) - (sb.overdue ? 0 : 1) || (sa.days ?? 1e9) - (sb.days ?? 1e9) || a.id - b.id; },
     rowClass: m => (App.maintStatus(m).overdue ? "low" : ""),
     columns: [["Task", m => html`<b>${m.task}</b>`], ["Machine", m => m.machine], ["Every", m => (m.interval_days ? m.interval_days + " days" : "As needed")],
-      ["Last done", m => m.last_done || "never"], ["Status", m => { const s = App.maintStatus(m); return html`<span class="badge ${s.overdue ? "bad" : s.days != null && s.days <= 7 ? "warn" : "ok"}">${s.text}</span>`; }], ["Notes", m => m.notes]],
+      ["Last done", m => m.last_done || "never"], ["Status", m => { const s = App.maintStatus(m); return html`<span class="badge ${s.overdue ? "bad" : s.never ? "info" : s.days != null && s.days <= 7 ? "warn" : "ok"}">${s.text}</span>`; }], ["Notes", m => m.notes]],
     actions: m => html`<button class="btn sm pri" data-act="done" data-id="${m.id}">Done today</button>`,
     onAction: async (act, row) => { if (act === "done") { await App.save("maintenance", row.id, { last_done: today() }); toast("Marked done"); } },
     name: m => m.task,
-    summary: rows => { const od = rows.filter(m => App.maintStatus(m).overdue); return od.length ? note("warn", `${od.length} task${od.length > 1 ? "s" : ""} overdue: ${od.map(m => m.task).join("; ")}`) : note("ok", "Everything is up to date."); },
+    summary: rows => {
+      const od = rows.filter(m => App.maintStatus(m).overdue), fresh = rows.filter(m => App.maintStatus(m).never);
+      return html`${od.length ? note("warn", `${od.length} task${od.length > 1 ? "s" : ""} overdue: ${od.map(m => m.task).join("; ")}`) : note("ok", "Nothing is overdue.")}${fresh.length ? note("info", `${fresh.length} task${fresh.length > 1 ? "s haven't" : " hasn't"} been marked done yet. Press “Done today” as you do them to start the clock.`) : ""}`;
+    },
   });
 
   // ================================================================== Settings & data
@@ -242,7 +246,7 @@
     { id: "table_x_mm", label: "Travel / table, X", type: "len", def: 565 },
     { id: "table_y_mm", label: "Travel / table, Y", type: "len", def: 770 },
     { id: "z_travel_mm", label: "Travel, Z", type: "len", def: 85 },
-    { id: "weight_limit_lb", label: "Robot weight limit (lb)", type: "num", def: 115, hint: "Without bumpers and battery. 115 lb for the 2025 and 2026 seasons; check the current manual." },
+    { id: "weight_limit_lb", label: "Robot weight limit (lb)", type: "num", def: 115, hint: "Without bumpers and battery. 115 lb for the 2025 and 2026 seasons (135 lb with bumpers); check the current manual." },
   ];
 
   App.register({

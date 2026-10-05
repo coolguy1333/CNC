@@ -59,11 +59,14 @@
     return Math.min(2, 1 / (2 * Math.sqrt(aeFrac * (1 - aeFrac))));
   }
 
+  /** Chip room is shared between flutes, so the chipload per tooth falls as flutes are added (total feed is only ~20% above a single flute). */
+  const fluteFactor = z => (z > 1 ? 1.2 / z : 1);
+
   function modelBaseline(M, tool, machine) {
     const tm = tool.mat === "hss" ? "hss" : "carbide";
     const D = tool.actual_mm;
     const rpm = clamp(r100((M.sfm[tm] * FT * 1000) / (Math.PI * D)), machine.min_rpm, machine.max_rpm);
-    const fz = M.fz * (tm === "hss" ? HSS_FZ : 1) * (tool.feed_factor || 1);
+    const fz = M.fz * (tm === "hss" ? HSS_FZ : 1) * (tool.feed_factor || 1) * fluteFactor(tool.flutes || 1);
     return { source: "model", rpm, fzSlot: fz * D, docSlot: M.doc * D, plunge: M.plunge * clamp(D / 4.6, 0.5, 1.5), ramp: 0 };
   }
 
@@ -100,6 +103,8 @@
     if (!proven && doc > cap) { doc = cap; docLimit = "tool diameter"; }
     const fluteMax = tool.flute_len_mm * 0.9;
     if (doc > fluteMax) { doc = fluteMax; docLimit = "flute length"; }
+    let tooLight = false;
+    if (doc < MIN_DOC) { doc = MIN_DOC; tooLight = true; }
     if (total_mm > 0 && doc > total_mm) { doc = total_mm; docLimit = "stock thickness"; }
 
     const stick = ctx.stick_mm > 0 ? ctx.stick_mm : (total_mm || doc) + 3;
@@ -117,7 +122,6 @@
       return { mrr, power, fpeak, defl: (fpeak * Math.pow(stick, 3)) / (3 * E * I) };
     };
     let L = loads(doc);
-    let tooLight = false;
     if (!proven) {
       if (L.defl > machine.defl_limit_mm) { doc *= machine.defl_limit_mm / L.defl; docLimit = "tool deflection"; L = loads(doc); }
       if (L.power > availW * 0.7) { doc *= (availW * 0.7) / L.power; docLimit = "spindle power"; L = loads(doc); }
@@ -179,17 +183,22 @@
   function recommend(inp) {
     const M = MATERIALS[inp.material];
     if (!M) throw new Error("Unknown material " + inp.material);
-    const tool = inp.tool;
-    if (!tool || !(tool.actual_mm > 0)) throw new Error("Tool needs a diameter");
+    const t0 = inp.tool;
+    if (!t0 || !(t0.actual_mm > 0) || !isFinite(t0.actual_mm)) throw new Error("Tool needs a diameter");
+    const pos = (x, fallback) => (isFinite(x) && x > 0 ? x : fallback);
+    const tool = Object.assign({}, t0, {
+      flutes: Math.max(1, Math.round(pos(t0.flutes, 1))), flute_len_mm: pos(t0.flute_len_mm, t0.actual_mm * 3), overall_mm: pos(t0.overall_mm, 0),
+      nominal_mm: pos(t0.nominal_mm, t0.actual_mm), feed_factor: pos(t0.feed_factor, 1),
+    });
     const machine = Object.assign({}, defaultMachine, inp.machine);
     const ctx = {
-      M, tool, machine, material: inp.material, op: inp.op || "slot", agg: inp.agg > 0 ? inp.agg : 1, total_mm: Math.max(0, inp.total_mm || 0),
-      stick_mm: inp.stick_mm || 0, cool: inp.cool || "mist", stepover: inp.stepover,
+      M, tool, machine, material: inp.material, op: inp.op || "slot", agg: clamp(pos(inp.agg, 1), 0.3, 2), total_mm: isFinite(inp.total_mm) ? Math.max(0, inp.total_mm) : 0,
+      stick_mm: isFinite(inp.stick_mm) ? Math.max(0, inp.stick_mm) : 0, cool: inp.cool || "mist", stepover: inp.stepover,
     };
     const face = inp.material === "spoilboard";
     if (face) ctx.op = "surface";
     else if (!OPS[ctx.op]) throw new Error("Unknown operation " + ctx.op);
-    const hasTested = inp.recipe && inp.recipe.rpm > 0 && inp.recipe.feed_mm > 0;
+    const hasTested = !!(inp.recipe && inp.recipe.rpm > 0 && inp.recipe.feed_mm > 0 && isFinite(inp.recipe.rpm) && isFinite(inp.recipe.feed_mm));
     const modelBase = face ? faceBaseline(tool, machine) : modelBaseline(M, tool, machine);
     const solve = face ? solveFace : solveEndmill;
     const model = solve(ctx, modelBase);
@@ -229,9 +238,9 @@
     if (r.rpm < machine.min_rpm - 1 || r.rpm > machine.max_rpm + 1)
       add("warn", `${Math.round(r.rpm)} rpm is outside the machine range you set (${machine.min_rpm}-${machine.max_rpm}).`);
     else if (r.rpm < 8000 && !(face && hasTested))
-      add("info", "Under about 8,000 rpm the OMIO spindle works harder and loses cooling; the community advice is 12,000+ when you can.");
+      add("info", "Community advice (Chief Delphi) is to avoid running the OMIO spindle below about 8,000 rpm and to prefer 12,000+ when you can.");
     else if (r.rpm < 8000)
-      add("info", "5,000 rpm is below what the community suggests for this spindle (8,000+), but it is your tested facemill setting.");
+      add("info", "5,000 rpm is below the 8,000+ rpm the community suggests for this spindle, but it is your tested facemill setting.");
 
     if (face) {
       add("warn", "MDF dust is nasty: run the dust shoe/vacuum and wear a respirator.");
@@ -277,10 +286,12 @@
    * half a diameter inside it across the lines, because the cutter's own radius covers the rest.
    */
   function spoilboardPlan(p) {
-    const D = p.diameter, w = p.w, l = p.l, step = clamp(p.stepover || 0.7, 0.1, 0.95) * D, m = Math.max(0, p.margin == null ? 3 : p.margin);
-    if (!(D > 0) || !(w > 0) || !(l > 0)) throw new Error("Need a cutter diameter and an area");
+    const D = p.diameter, w = p.w, l = p.l, step = clamp(p.stepover || 0.7, 0.1, 0.95) * D;
+    if (!(D > 0) || !(w > 0) || !(l > 0) || ![D, w, l].every(isFinite)) throw new Error("Need a cutter diameter and an area");
+    const m = clamp(isFinite(p.margin) ? p.margin : 3, 0, D);   // running past the edge by more than a cutter diameter is pointless
     const span = Math.max(0, w - D + 2 * m);            // distance the cutter centre must travel across the lines
     const lines = span === 0 ? 1 : Math.ceil(span / step - 1e-9) + 1;
+    if (lines > 2000) throw new Error("That would be more than 2,000 lines. Check the board size and the cutter.");
     const spacing = lines > 1 ? span / (lines - 1) : 0;
     const lineLen = l + 2 * m;
     const layerPath = lines * lineLen + (lines - 1) * spacing;

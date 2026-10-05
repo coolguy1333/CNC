@@ -111,6 +111,7 @@
         ])}<div class="notes">${c.capped ? note("warn", `Held to your machine's ${group(v.maxRpm)} rpm.`) : ""}
           ${note("info", "Speed drops as the work gets bigger: recalculate for each diameter. Keep tool stick-out short.")}</div>`;
       }
+      if (!(v.thk > 0)) return note("bad", "Enter the thickness at the cut.");
       const t = Shop.sawTpi(v.thk / IN, v.teeth);
       const sfpm = v.wheel > 0 && v.bsRpm > 0 ? Shop.bladeSfpm(v.wheel / IN, v.bsRpm) : 0;
       return html`<h2>Saw blade</h2>${tiles([
@@ -143,8 +144,8 @@
     id: "weight", title: "Weight & Stock", keywords: "weight mass tube plate sheet aluminum polycarbonate density pounds kg budget rod angle",
     intro: "How much does that piece weigh? Add parts to the robot weight budget as you design.",
     fields: [
-      { id: "preset", label: "Common stock", type: "select", def: "", options: [["", "Pick one, or enter sizes below…"], ...STOCK.map(s => [s[0], s[1]])] },
-      { id: "shape", label: "Shape", type: "select", def: "recttube", options: SHAPES },
+      { id: "preset", label: "Common stock", type: "select", wide: true, def: "", options: [["", "Pick one, or enter sizes below…"], ...STOCK.map(s => [s[0], s[1]])] },
+      { id: "shape", label: "Shape", type: "select", wide: true, def: "recttube", options: SHAPES },
       { id: "width", label: "Width", type: "len", def: 25.4, show: v => ["recttube", "plate", "angle"].includes(v.shape) },
       { id: "height", label: "Height", type: "len", def: 25.4, show: v => ["recttube", "angle"].includes(v.shape) },
       { id: "thickness", label: "Thickness", type: "len", def: 3.175, show: v => v.shape === "plate" },
@@ -198,7 +199,7 @@
   const unitName = v => (v.units === "mm" ? "mm" : "in");
   function parseParts(text, units) {
     const parts = [], errors = [];
-    text.split(/\r?\n/).forEach((line, i) => {
+    text.split(/\r?\n/).slice(0, 300).forEach((line, i) => {
       const s = line.trim();
       if (!s) return;
       const m = /^(.+?)\s*(?:[x×*]\s*(\d+))?\s*(?:[,;]\s*(.*))?$/i.exec(s);
@@ -209,7 +210,7 @@
         qty = m[2] ? parseInt(m[2], 10) : 1;
         name = (m[3] || "").trim();
       }
-      if (!isFinite(len) || len <= 0 || !(qty >= 1)) errors.push(`Line ${i + 1}: couldn't read “${s}”`);
+      if (!isFinite(len) || len <= 0 || !(qty >= 1) || qty > 1000) errors.push(`Line ${i + 1}: couldn't read “${s}”` + (qty > 1000 ? " (at most 1000 of one piece)" : ""));
       else parts.push({ len: len * IN, qty, name });
     });
     return { parts, errors };
@@ -265,7 +266,7 @@
     id: "bend", title: "Sheet Bending", keywords: "bend allowance deduction k-factor flat pattern radius brake aluminum 5052 6061 polycarbonate",
     intro: "Flat length for a part bent on the brake, and a warning if the radius is too tight for the alloy.",
     fields: [
-      { id: "alloy", label: "Alloy", type: "select", def: "5052-H32", options: [["5052-H32", "5052-H32 (bends well)"], ["6061-T6", "6061-T6 (cracks easily)"], ["other", "Other aluminum"]] },
+      { id: "alloy", label: "Alloy", type: "select", wide: true, def: "5052-H32", options: [["5052-H32", "5052-H32 (bends well)"], ["6061-T6", "6061-T6 (cracks easily)"], ["other", "Other aluminum"]] },
       { id: "t", label: "Thickness", type: "len", def: 1.5875 },
       { id: "r", label: "Inside bend radius", type: "len", def: 1.5875, hint: "What the tooling gives you. For air bending it's roughly the die opening divided by 6." },
       { id: "angle", label: "Bend angle", type: "num", unit: "°", def: 90, min: 1, max: 179, dp: 0, hint: "How far the metal turns: 90 for a square corner." },
