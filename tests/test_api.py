@@ -77,6 +77,39 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.req("PUT", "/api/settings", {"min_rpm": 8000, "max_rpm": 24000}, ck)[0], 200)
         self.assertEqual(self.req("GET", "/api/state")[1]["settings"]["min_rpm"], 8000)
 
+    def test_cross_origin_blocked(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("POST", "/api/login", json.dumps({"password": "pw"}),
+                  {"Content-Type": "application/json", "Origin": "https://evil.example"})
+        self.assertEqual(c.getresponse().status, 403)
+
+    def test_bad_content_length_and_content_type(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.putrequest("POST", "/api/login")
+        c.putheader("Content-Type", "application/json")
+        c.putheader("Content-Length", "abc")
+        c.endheaders()
+        self.assertEqual(c.getresponse().status, 400)
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        c.request("POST", "/api/login", "pw=pw", {"Content-Type": "text/plain"})
+        self.assertEqual(c.getresponse().status, 400)
+
+    def test_unauth_error_does_not_desync_keepalive(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port)
+        body = json.dumps({"name": "x"})
+        c.request("POST", "/api/tools", body, {"Content-Type": "application/json"})
+        r = c.getresponse(); r.read()
+        self.assertEqual(r.status, 401)
+        c.request("GET", "/api/health")
+        self.assertEqual(c.getresponse().status, 200)
+
+    def test_export_needs_admin(self):
+        self.assertEqual(self.req("GET", "/api/export")[0], 401)
+        ck = self.login()
+        s, data, _ = self.req("GET", "/api/export", None, ck)
+        self.assertEqual(s, 200)
+        self.assertIn("tools", data)
+
     def test_static_traversal(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port)
         c.request("GET", "/../server.py")

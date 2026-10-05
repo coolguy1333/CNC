@@ -6,6 +6,7 @@ $DATA_DIR, answers /api/health, and stops cleanly on SIGTERM.
 Reading is public; changing tools/materials/recipes/settings needs the
 ADMIN_PASSWORD.
 """
+import contextlib
 import hashlib
 import hmac
 import json
@@ -16,6 +17,7 @@ import signal
 import sqlite3
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -86,7 +88,7 @@ ENTITIES = {
 }
 
 SETTINGS_DEFAULTS = {
-    "min_rpm": 6000.0,
+    "min_rpm": 5000.0,
     "max_rpm": 24000.0,
     "max_feed_mm": 6000.0,
     "spindle_w": 1000.0,
@@ -131,23 +133,37 @@ SEED_MATERIALS = [
 _db_lock = threading.Lock()
 
 
+@contextlib.contextmanager
 def connect():
+    """Open the DB; commit on success, roll back on error, always close."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DATA_DIR / "cnc.sqlite3", timeout=10)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA foreign_keys=ON")
-    return con
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        yield con
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def sql_type(kind):
     return {"str": "TEXT", "enum": "TEXT", "int": "INTEGER", "float": "REAL"}[kind]
 
 
+def sql_default(f):
+    if f[1] in ("str", "enum"):
+        return "'" + str(f[2]).replace("'", "''") + "'"
+    return repr(f[2])
+
+
 def init_db():
     with _db_lock, connect() as con:
         for table, spec in ENTITIES.items():
-            cols = ",".join(f"{f[0]} {sql_type(f[1])} NOT NULL DEFAULT {json.dumps(f[2]) if f[1] in ('str', 'enum') else f[2]}"
+            cols = ",".join(f"{f[0]} {sql_type(f[1])} NOT NULL DEFAULT {sql_default(f)}"
                             for f in spec["fields"])
             con.execute(f"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, {cols},"
                         " updated_at REAL NOT NULL DEFAULT 0)")
@@ -276,6 +292,8 @@ def record_login(ip, ok):
         if ok:
             _fail.pop(ip, None)
             return
+        if len(_fail) > 1000:
+            _fail.clear()
         n, _ = _fail.get(ip, (0, 0))
         n += 1
         _fail[ip] = (n, time.time() + min(2 ** n, 300) if n >= 5 else 0)
@@ -285,8 +303,11 @@ def record_login(ip, ok):
 class Handler(BaseHTTPRequestHandler):
     server_version = "CNCCalc"
     protocol_version = "HTTP/1.1"
+    timeout = 15  # seconds; drops stalled/slow clients
 
     def log_message(self, fmt, *args):
+        if "timed out" in fmt:  # idle keep-alive connections closing; not interesting
+            return
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
 
     # -- helpers --
@@ -305,9 +326,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; "
-                         "style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'")
-        self.send_header("Cache-Control", "no-store" if ctype == "application/json" else "no-cache")
+                         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                         "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Cache-Control", "no-store" if ctype.startswith("application/json") else "no-cache")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -327,25 +350,68 @@ class Handler(BaseHTTPRequestHandler):
     def is_admin(self):
         return valid_token(self.cookie())
 
-    def body(self):
-        if "application/json" not in self.headers.get("Content-Type", ""):
-            raise ValidationError("Content-Type must be application/json")
-        n = int(self.headers.get("Content-Length") or 0)
-        if n > MAX_BODY:
-            raise ValidationError("Request too large")
-        try:
-            return json.loads(self.rfile.read(n) or b"null")
-        except ValueError:
-            raise ValidationError("Invalid JSON")
-
     def secure_flag(self):
         return "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
 
+    def guard(self, fn):
+        """Run a handler; never let an exception kill the connection silently."""
+        self.close_connection = False
+        try:
+            fn()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True
+        except Exception:
+            traceback.print_exc()
+            self.close_connection = True
+            try:
+                self.err(500, "Server error")
+            except Exception:
+                pass
+
+    def read_body(self):
+        """Read the request body up front so error replies never leave unread bytes on a keep-alive connection."""
+        self._raw = b""
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            return self.err(411, "Content-Length required")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0:
+            self.close_connection = True
+            return self.err(400, "Bad Content-Length")
+        if n > MAX_BODY:
+            self.close_connection = True
+            return self.err(413, "Request too large")
+        self._raw = self.rfile.read(n) if n else b""
+        return None
+
+    def json_body(self):
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            raise ValidationError("Content-Type must be application/json")
+        try:
+            return json.loads(self._raw or b"null")
+        except ValueError:
+            raise ValidationError("Invalid JSON")
+
+    def same_origin(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        host = urlparse(origin).netloc
+        return host in (self.headers.get("Host"), self.headers.get("X-Forwarded-Host"))
+
     # -- routing --
     def do_HEAD(self):
-        self.do_GET()
+        self.guard(self.get)
 
     def do_GET(self):
+        self.guard(self.get)
+
+    def get(self):
+        if self.headers.get("Content-Length", "0") not in ("", "0") or self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
         path = urlparse(self.path).path
         if path == "/api/health":
             return self.send(200, {"ok": True})
@@ -356,6 +422,13 @@ class Handler(BaseHTTPRequestHandler):
             state["admin"] = self.is_admin()
             state["admin_configured"] = bool(ADMIN_PASSWORD)
             return self.send(200, state)
+        if path == "/api/export":
+            if not self.is_admin():
+                return self.err(401, "Admin login required")
+            with _db_lock, connect() as con:
+                data = {t: rows(con, t) for t in ENTITIES}
+                data["settings"] = get_settings(con)
+            return self.send(200, data, extra={"Content-Disposition": 'attachment; filename="cnc-data.json"'})
         if path.startswith("/api/"):
             return self.err(404, "Not found")
         self.static(path)
@@ -367,19 +440,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(404, "Not found")
         ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
-            ctype += "; charset=utf-8" if "charset" not in ctype else ""
+            ctype += "; charset=utf-8"
         self.send(200, f.read_bytes(), ctype)
 
     def do_POST(self):
-        self.mutate("POST")
+        self.guard(lambda: self.mutate("POST"))
 
     def do_PUT(self):
-        self.mutate("PUT")
+        self.guard(lambda: self.mutate("PUT"))
 
     def do_DELETE(self):
-        self.mutate("DELETE")
+        self.guard(lambda: self.mutate("DELETE"))
 
     def mutate(self, method):
+        if self.read_body() is not None or self.close_connection:
+            return
+        if not self.same_origin():
+            return self.err(403, "Cross-origin request blocked")
         path = urlparse(self.path).path.strip("/").split("/")
         try:
             if path == ["api", "login"] and method == "POST":
@@ -392,17 +469,17 @@ class Handler(BaseHTTPRequestHandler):
             if not self.is_admin():
                 return self.err(401, "Admin login required")
             if path[1] == "settings" and method == "PUT" and len(path) == 2:
-                data = clean_settings(self.body())
+                data = clean_settings(self.json_body())
                 with _db_lock, connect() as con:
                     for k, v in data.items():
                         con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                                     (k, str(v)))
-                    con.commit()
                 return self.send(200, data)
             table = path[1]
             if table not in ENTITIES:
                 return self.err(404, "Not found")
-            return self.entity(method, table, path[2:])
+            code, obj = self.entity(method, table, path[2:])
+            return self.send(code, obj)
         except ValidationError as e:
             return self.err(400, str(e))
         except sqlite3.IntegrityError as e:
@@ -414,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(403, "ADMIN_PASSWORD is not set on the server")
         if throttled(ip):
             return self.err(429, "Too many attempts; wait a bit")
-        data = self.body()
+        data = self.json_body()
         pw = str(data.get("password", "")) if isinstance(data, dict) else ""
         ok = hmac.compare_digest(hashlib.sha256(pw.encode()).digest(), hashlib.sha256(ADMIN_PASSWORD.encode()).digest())
         record_login(ip, ok)
@@ -425,36 +502,31 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True}, extra={"Set-Cookie": cookie})
 
     def entity(self, method, table, rest):
+        """Returns (status, payload). The DB lock is released before anything is written to the socket."""
         with _db_lock, connect() as con:
             if method == "POST" and not rest:
-                data = self.body()
-                if isinstance(data, list):  # bulk import
+                data = self.json_body()
+                if isinstance(data, list):  # bulk import (all-or-nothing)
                     if len(data) > 500:
                         raise ValidationError("Too many rows (max 500)")
-                    ids = [insert(con, table, self.check(con, table, d)) for d in data]
-                    con.commit()
-                    return self.send(201, {"ids": ids})
-                new_id = insert(con, table, self.check(con, table, data))
-                con.commit()
-                return self.send(201, {"id": new_id})
+                    return 201, {"ids": [insert(con, table, self.check(con, table, d)) for d in data]}
+                return 201, {"id": insert(con, table, self.check(con, table, data))}
             if len(rest) == 1 and rest[0].isdigit():
                 rid = int(rest[0])
                 if not con.execute(f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
-                    return self.err(404, "Not found")
+                    return 404, {"error": "Not found"}
                 if method == "PUT":
-                    row = self.check(con, table, self.body())
+                    row = self.check(con, table, self.json_body())
                     sets = ",".join(f"{c}=?" for c in row)
                     con.execute(f"UPDATE {table} SET {sets},updated_at=? WHERE id=?", list(row.values()) + [time.time(), rid])
-                    con.commit()
-                    return self.send(200, {"id": rid})
+                    return 200, {"id": rid}
                 if method == "DELETE":
-                    if table in ("tools", "materials"):  # remove dependent recipes
+                    if table in ("tools", "materials"):  # remove dependent saved settings
                         col = "tool_id" if table == "tools" else "material_id"
                         con.execute(f"DELETE FROM recipes WHERE {col}=?", (rid,))
                     con.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
-                    con.commit()
-                    return self.send(200, {"ok": True})
-        return self.err(405, "Method not allowed")
+                    return 200, {"ok": True}
+        return 405, {"error": "Method not allowed"}
 
     def check(self, con, table, data):
         row = clean(table, data)

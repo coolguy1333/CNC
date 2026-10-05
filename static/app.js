@@ -2,8 +2,27 @@
   const $ = (s, el = document) => el.querySelector(s);
   const IN = 25.4;
   const S = { data: null, tab: "calc", unit: "mm", job: { tool: 0, mat: 0, op: "slot", total: 6, cool: "air", agg: 100, stick: 0 } };
-  try { S.unit = localStorage.getItem("unit") || ""; } catch (e) {}
+  try {
+    S.unit = localStorage.getItem("unit") || "";
+    Object.assign(S.job, JSON.parse(localStorage.getItem("job") || "{}"));
+  } catch (e) {}
+  const saveJob = () => { try { localStorage.setItem("job", JSON.stringify(S.job)); } catch (e) {} };
+  const hashTab = location.hash.slice(1);
 
+  const DEFAULTS = {
+    tools: { kind: "flat", nominal_mm: 3, actual_mm: 3, flutes: 1, flute_len_mm: 12, overall_mm: 40, shank_mm: 3, mat: "carbide", feed_factor: 1 },
+    materials: { heat: "metal", sfm_carbide: 500, sfm_hss: 200, fz_ratio: 0.015, kc: 700, doc_slot: 0.3, doc_side: 1, woc: 0.15, plunge: 0.3 },
+    recipes: { op: "profile", rating: 3, rpm: 0, feed_mm: 0, plunge_mm: 0, doc_mm: 0, woc_mm: 0 },
+  };
+  const HELP = {
+    nominal_mm: "Size printed on the tool.", actual_mm: "Measured cutting diameter. Used for all calculations and CAM.",
+    feed_factor: "Scale chipload for this tool. Use below 1 for flimsy or cheap tools.", flute_len_mm: "Deepest you can cut with this tool.",
+    sfm_carbide: "Surface speed for carbide tools (feet/min).", sfm_hss: "Surface speed for HSS tools (feet/min).",
+    fz_ratio: "Chipload per tooth as a fraction of tool diameter.", kc: "Specific cutting force; drives spindle load and deflection estimates.",
+    doc_slot: "Depth per pass when slotting, as a multiple of tool diameter.", doc_side: "Depth per pass for side cuts, × diameter.",
+    woc: "Radial engagement for side cuts, × diameter.", plunge: "Plunge feed as a fraction of cutting feed.",
+    rating: "How well this setting worked (5 = perfect).",
+  };
   const TABS = [["calc", "Calculator"], ["tools", "Tools"], ["materials", "Materials"], ["recipes", "Saved settings"], ["settings", "Machine"]];
   const KINDS = ["flat", "ball", "face", "bull", "other"];
   const FIELDS = {
@@ -48,15 +67,21 @@
     clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2500);
   }
   async function api(method, path, body) {
-    const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    let r;
+    try { r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }); }
+    catch (e) { throw new Error("Can't reach the server"); }
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || r.statusText);
+    if (!r.ok) {
+      if (r.status === 401 && path !== "/api/login" && S.data && S.data.admin) { S.data.admin = false; chrome(); throw new Error("Session expired. Log in again."); }
+      throw new Error(j.error || r.statusText);
+    }
     return j;
   }
   async function load() {
     S.data = await api("GET", "/api/state");
     if (S.unit !== "mm" && S.unit !== "in") S.unit = S.data.settings.units;
     const d = S.data;
+    if (!["calc", "tools", "materials", "recipes", "settings"].includes(S.tab)) S.tab = "calc";
     if (!byId(d.tools, S.job.tool)) {
       const pref = d.tools.find(t => /thrifty bot 5/i.test(t.name)) || d.tools[0];
       S.job.tool = pref ? pref.id : 0;
@@ -73,7 +98,7 @@
     a.textContent = S.data.admin ? "Log out" : "Admin login";
     a.title = S.data.admin_configured ? "" : "ADMIN_PASSWORD is not set on the server";
   }
-  $("#tabs").addEventListener("click", e => { const t = e.target.dataset.t; if (t) { S.tab = t; chrome(); render(); } });
+  $("#tabs").addEventListener("click", e => { const t = e.target.dataset.t; if (t) { S.tab = t; history.replaceState(null, "", "#" + t); chrome(); render(); } });
   $("#unitSeg").addEventListener("click", e => {
     const u = e.target.dataset.u; if (!u) return;
     S.unit = u; try { localStorage.setItem("unit", u); } catch (x) {}
@@ -96,6 +121,7 @@
   // ---------- render ----------
   function render() {
     const v = $("#view");
+    v.onclick = null;
     v.className = S.tab === "calc" ? "" : "one";
     ({ calc: viewCalc, tools: viewList, materials: viewList, recipes: viewList, settings: viewSettings })[S.tab](v);
   }
@@ -137,13 +163,13 @@
       </section>`;
     $("#jCool").value = j.cool;
     const on = (id, fn) => $(id).addEventListener("input", fn);
-    on("#jTool", e => { j.tool = +e.target.value; update(); });
-    on("#jMat", e => { j.mat = +e.target.value; update(); });
-    on("#jOp", e => { j.op = e.target.value; update(); });
-    on("#jTotal", e => { j.total = toMm(+e.target.value || 0); update(); });
-    on("#jStick", e => { j.stick = toMm(+e.target.value || 0); update(); });
-    on("#jCool", e => { j.cool = e.target.value; update(); });
-    on("#jAgg", e => { j.agg = +e.target.value; update(); });
+    on("#jTool", e => { j.tool = +e.target.value; saveJob(); update(); });
+    on("#jMat", e => { j.mat = +e.target.value; saveJob(); update(); });
+    on("#jOp", e => { j.op = e.target.value; saveJob(); update(); });
+    on("#jTotal", e => { j.total = toMm(+e.target.value || 0); saveJob(); update(); });
+    on("#jStick", e => { j.stick = toMm(+e.target.value || 0); saveJob(); update(); });
+    on("#jCool", e => { j.cool = e.target.value; saveJob(); update(); });
+    on("#jAgg", e => { j.agg = +e.target.value; saveJob(); update(); });
     $("#copyBtn").onclick = copyCam;
     $("#saveRecipe").onclick = saveCurrent;
     update();
@@ -233,7 +259,7 @@
       const row = byId(d[t], id);
       if (b.dataset.e) edit(t, row, false);
       else if (b.dataset.c) edit(t, { ...row, name: row.name ? row.name + " copy" : row.name }, true);
-      else if (confirm("Delete this entry" + (t !== "recipes" ? " and its saved settings" : "") + "?")) {
+      else if (confirm(`Delete “${row.name || "this saved setting"}”` + (t !== "recipes" ? " and its saved settings" : "") + "?")) {
         try { await api("DELETE", `/api/${t}/${id}`); toast("Deleted"); await reload(); } catch (x) { toast(x.message); }
       }
     };
@@ -246,6 +272,7 @@
   function edit(table, row, isNew) {
     const f = $("#dlgForm");
     const d = S.data;
+    if (isNew) row = { ...DEFAULTS[table], ...row };
     const cells = FIELDS[table].map(([k, label, type, extra]) => {
       const val = row[k] !== undefined ? row[k] : "";
       let input;
@@ -256,7 +283,7 @@
         input = `<select name="${k}">${opts(list, val || (list[0] && list[0].id))}</select>`;
       } else input = `<input name="${k}" type="${type}" ${type === "number" ? 'step="any"' : ""} value="${esc(val)}">`;
       const span = extra === 2 ? ' style="grid-column:1/-1"' : "";
-      return `<div${span}><label>${label}</label>${input}</div>`;
+      return `<div${span}><label>${label}</label>${input}${HELP[k] ? `<div class="mut">${esc(HELP[k])}</div>` : ""}</div>`;
     }).join("");
     f.innerHTML = `<h2>${isNew ? "Add" : "Edit"} ${table.slice(0, -1)}</h2><div class="row">${cells}</div>
       <div class="dact"><button value="cancel" type="button" id="dc">Cancel</button><button class="pri" value="ok" id="dok">Save</button></div>`;
@@ -269,8 +296,12 @@
       try {
         await (isNew ? api("POST", `/api/${table}`, body) : api("PUT", `/api/${table}/${row.id}`, body));
         dlg.close(); toast("Saved"); await reload();
-      } catch (x) { toast(x.message); }
+      } catch (x) { toast(friendly(table, x.message)); }
     };
+  }
+  function friendly(table, msg) {
+    const f = (FIELDS[table] || []).find(x => msg.startsWith(x[0] + ":"));
+    return f ? f[1] + msg.slice(f[0].length) : msg;
   }
 
   // ---------- machine settings ----------
@@ -281,7 +312,15 @@
     v.innerHTML = `<section><h2>Machine limits</h2><div class="row">${rows.map(([k, l]) => `<div><label>${l}</label><input name="${k}" type="number" step="any" value="${s[k]}"></div>`).join("")}
       <div><label>Default units</label><select name="units"><option>mm</option><option>in</option></select></div></div>
       <div class="mut" style="margin-top:8px">Spindle power is used to cap depth of cut (power falls with RPM). Deflection is estimated from cutting force and stick-out; 0.02 mm is a good finish limit.</div>
-      <div class="dact"><button id="sv" class="pri">Save</button></div></section>`;
+      <div class="dact"><button id="ex">Download backup (JSON)</button><button id="sv" class="pri">Save</button></div></section>`;
+    $("#ex").onclick = async () => {
+      if (!(await needAdmin())) return;
+      try {
+        const r = await fetch("/api/export"); if (!r.ok) throw new Error("Export failed");
+        const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "cnc-data.json"; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      } catch (x) { toast(x.message); }
+    };
     $("select[name=units]", v).value = s.units;
     $("#sv").onclick = async () => {
       if (!(await needAdmin())) return;
@@ -291,28 +330,48 @@
   }
 
   // ---------- Fusion .tools import ----------
+  // Minimal ZIP reader (stored/deflate) so no external library is needed.
+  async function readZipJson(file) {
+    const buf = await file.arrayBuffer(), v = new DataView(buf), u8 = new Uint8Array(buf), td = new TextDecoder();
+    let e = buf.byteLength - 22;
+    while (e >= 0 && v.getUint32(e, true) !== 0x06054b50) e--;
+    if (e < 0) throw new Error("not a zip");
+    let p = v.getUint32(e + 16, true);
+    const count = v.getUint16(e + 10, true);
+    for (let i = 0; i < count && v.getUint32(p, true) === 0x02014b50; i++) {
+      const method = v.getUint16(p + 10, true), csize = v.getUint32(p + 20, true), nl = v.getUint16(p + 28, true),
+        el = v.getUint16(p + 30, true), cl = v.getUint16(p + 32, true), off = v.getUint32(p + 42, true);
+      const name = td.decode(u8.subarray(p + 46, p + 46 + nl));
+      p += 46 + nl + el + cl;
+      if (!name.endsWith(".json")) continue;
+      const start = off + 30 + v.getUint16(off + 26, true) + v.getUint16(off + 28, true);
+      const data = u8.subarray(start, start + csize);
+      if (method === 0) return td.decode(data);
+      if (method === 8) return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+    }
+    throw new Error("no json in zip");
+  }
+
   async function importTools(file) {
     try {
-      let txt;
-      if (file.name.endsWith(".json")) txt = await file.text();
-      else {
-        const z = await JSZip.loadAsync(file);
-        const f = z.file("tools.json") || Object.values(z.files).find(x => x.name.endsWith(".json"));
-        txt = await f.async("string");
-      }
+      if (file.size > 5e6) throw new Error("too big");
+      const txt = file.name.endsWith(".json") ? await file.text() : await readZipJson(file);
       const data = JSON.parse(txt).data;
+      if (!Array.isArray(data)) throw new Error("bad format");
       const have = new Set(S.data.tools.map(t => t.name.toLowerCase()));
-      const rows = data.map(t => {
+      const rows = data.filter(t => t && t.geometry && t.geometry.DC > 0).map(t => {
         const g = t.geometry, k = t.unit === "inches" ? IN : 1;
-        return { name: (t.description || "Tool").trim(), kind: t.type === "face mill" ? "face" : "flat", nominal_mm: +(g.DC * k).toFixed(3),
-          actual_mm: +(g.DC * k).toFixed(3), flutes: g.NOF || 1, flute_len_mm: +(g.LCF * k).toFixed(2), overall_mm: +((g.OAL || 0) * k).toFixed(1),
+        const dia = +(g.DC * k).toFixed(3);
+        return { name: String(t.description || "Tool").trim().slice(0, 120) || "Tool", kind: t.type === "face mill" ? "face" : "flat", nominal_mm: dia,
+          actual_mm: dia, flutes: Math.min(12, Math.max(1, g.NOF || 1)), flute_len_mm: +((g.LCF || 10) * k).toFixed(2), overall_mm: +((g.OAL || 0) * k).toFixed(1),
           shank_mm: 0, mat: t.BMC === "hss" ? "hss" : "carbide" };
       }).filter(r => !have.has(r.name.toLowerCase()));
       if (!rows.length) return toast("Nothing new to import");
-      if (!confirm(`Import ${rows.length} new tool(s)?\n\n${rows.map(r => r.name).join("\n")}`)) return;
+      if (!confirm(`Import ${rows.length} new tool(s)?\n\n${rows.map(r => r.name).join("\n")}\n\nFusion stores the nominal size; edit each tool's actual diameter if it runs undersized.`)) return;
       await api("POST", "/api/tools", rows); toast("Imported"); await reload();
     } catch (e) { toast("Could not read that tool file"); }
   }
 
+  if (hashTab) S.tab = hashTab;
   load().then(() => { chrome(); render(); }).catch(e => { $("#view").innerHTML = `<section>Failed to load: ${esc(e.message)}</section>`; });
 })();

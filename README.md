@@ -12,7 +12,7 @@ proven settings stored in a SQLite database. Python standard library only.
 - **Saved settings**: record "known-good" cuts and compare them with the calculation.
 - **Machine**: min/max RPM, max feed, spindle power, deflection limit.
 
-Anyone can use the calculator. Editing needs `ADMIN_PASSWORD`.
+Anyone can use the calculator. Editing needs `ADMIN_PASSWORD`. The Machine tab can download a JSON backup.
 
 ## Deploy with WebManager
 

@@ -20,7 +20,7 @@
     const add = (level, text) => notes.push({ level, text });
 
     // --- spindle speed from surface speed -------------------------------
-    const sfmTarget = (tool.mat === "hss" ? mat.sfm_hss : mat.sfm_carbide) * agg;
+    const sfmTarget = tool.mat === "hss" ? mat.sfm_hss : mat.sfm_carbide; // speed is set by the material, not the aggressiveness slider
     const vcTarget = sfmTarget * 0.3048; // m/min
     let rpm = (vcTarget * 1000) / (Math.PI * D);
     let rpmLimited = false;
@@ -30,19 +30,24 @@
     const vc = (Math.PI * D * rpm) / 1000; // m/min actual
 
     // --- radial engagement and chip thinning ----------------------------
-    const ae = op.aeMm ? Math.min(op.aeMm, D) : Math.min(1, op.ae(mat)) * D;
+    const face = tool.kind === "face";
+    // Facing cutters take light, narrow passes; end mills follow the operation's engagement.
+    const faceAe = mat.heat === "metal" ? 0.1 : mat.heat === "plastic" ? 0.3 : 0.5;
+    const ae = face ? faceAe * D : op.aeMm ? Math.min(op.aeMm, D) : Math.min(1, op.ae(mat)) * D;
     const aeFrac = ae / D;
     let thin = 1;
     if (aeFrac > 0 && aeFrac < 0.5) thin = Math.min(2, 1 / Math.sqrt(1 - Math.pow(1 - 2 * aeFrac, 2)));
 
     // --- chipload and feed ---------------------------------------------
-    let fz = D * mat.fz_ratio * op.fz * thin * agg * (tool.feed_factor || 1);
+    let fz = Math.min(D, 12) * mat.fz_ratio * op.fz * thin * agg * (tool.feed_factor || 1);
+    if (face) fz = 0.035 * (mat.fz_ratio / 0.017) * Math.min(thin, 1.5) * agg * (tool.feed_factor || 1); // typical insert/HSS facing chipload, mm/tooth
     let feed = rpm * z * fz * (op.feedMul || 1);
     let feedCapped = false;
     if (feed > set.max_feed_mm) { feed = set.max_feed_mm; feedCapped = true; fz = feed / (rpm * z * (op.feedMul || 1)); }
 
     // --- depth of cut: start from material rule, then check the machine --
     let doc = D * mat[op.doc] * op.docMul * agg;
+    if (face) doc = (mat.heat === "metal" ? 0.15 : mat.heat === "plastic" ? 0.5 : 1.5) * agg;
     let docLimit = "material";
     const maxByFlute = tool.flute_len_mm * 0.9;
     if (doc > maxByFlute) { doc = maxByFlute; docLimit = "flute length"; }
@@ -92,7 +97,10 @@
     if (docLimit === "tool deflection") add("info", `Depth reduced so predicted tool deflection stays under ${set.defl_limit_mm} mm. A shorter stick-out allows deeper cuts.`);
     if (docLimit === "spindle power") add("info", "Depth reduced to stay within ~70% of spindle power at this RPM.");
     if (tooLight) add("bad", "Even a 0.05 mm pass exceeds the deflection or power limit. Shorten the stick-out, use a bigger tool, or raise the limits.");
-    if (fz < D * 0.004) add("warn", "Chipload is very low; the tool may rub and overheat. Raise feed or lower RPM.");
+    if (face) add("info", "Face mill: using a light skim (narrow stepover, shallow depth). Keep the table rigid and use air blast.");
+    if (job.total_mm > tool.flute_len_mm) add("bad", `Total depth ${job.total_mm.toFixed(1)} mm is deeper than the ${tool.flute_len_mm} mm flute length. The shank would rub; use a longer-flute tool.`);
+    if (tool.overall_mm > 0 && stick > tool.overall_mm * 0.8) add("warn", "Stick-out is close to the tool's overall length; check you can reach this depth.");
+    if (!face && fz < Math.min(D, 12) * 0.004) add("warn", "Chipload is very low; the tool may rub and overheat. Raise feed or lower RPM.");
     if (stick / D > 4) add(stick / D > 6 ? "bad" : "warn", `Stick-out is ${(stick / D).toFixed(1)}x the diameter; expect chatter. Shorten it if you can.`);
     if (tool.mat === "hss" && mat.heat === "metal") add("warn", "HSS wears quickly in metal on a router; carbide is strongly preferred.");
     if (mat.heat === "metal" && job.cool === "none") add("bad", "Metal with no coolant or air: chips will recut and weld to the tool. Use air blast at minimum.");
