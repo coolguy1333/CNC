@@ -1,0 +1,13 @@
+{
+  "type": "app",
+  "health": "/api/health",
+  "memory_mb": 128,
+  "env": [
+    {
+      "name": "ADMIN_PASSWORD",
+      "description": "Password for editing tools, materials, saved recipes and machine settings. Anyone can view and use the calculator without it.",
+      "secret": true,
+      "required": true
+    }
+  ]
+}

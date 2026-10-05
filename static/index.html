@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CNC Feeds &amp; Speeds</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>CNC <span>Feeds &amp; Speeds</span></h1>
+  <nav id="tabs"></nav>
+  <div class="hr">
+    <div class="seg" id="unitSeg"><button data-u="mm">mm</button><button data-u="in">inch</button></div>
+    <button id="authBtn">Admin login</button>
+  </div>
+</header>
+<main id="view"></main>
+<dialog id="dlg"><form method="dialog" id="dlgForm"></form></dialog>
+<div id="toast" role="status"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="calc.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

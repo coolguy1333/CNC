@@ -1,0 +1,6 @@
+.git
+data/
+tests/
+.env
+__pycache__/
+*.md

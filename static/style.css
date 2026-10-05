@@ -1,0 +1,46 @@
+:root{--bg:#f4f5f7;--card:#fff;--ink:#14171c;--mut:#5d6672;--line:#dde1e6;--acc:#d9480f;--ok:#2b8a3e;--warn:#e8590c;--bad:#c92a2a;--inp:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#101215;--card:#1a1d22;--ink:#eceff3;--mut:#9aa4b0;--line:#2b3037;--acc:#ff8a4c;--ok:#69db7c;--warn:#ffa94d;--bad:#ff6b6b;--inp:#14171b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:10px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);background:var(--card)}
+h1{font-size:18px;margin:0}h1 span{color:var(--acc)}
+nav{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+nav button{border:0;background:none;padding:6px 10px;border-radius:6px;color:var(--mut)}
+nav button.on{background:var(--bg);color:var(--ink);font-weight:600}
+.hr{display:flex;gap:8px;align-items:center}
+main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:minmax(0,340px) minmax(0,1fr)}
+main.one{grid-template-columns:minmax(0,1fr)}
+@media(max-width:800px){main{grid-template-columns:minmax(0,1fr)}}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 0 10px}
+label{display:block;font-size:12px;color:var(--mut);margin:9px 0 3px}
+select,input,textarea{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--inp);color:var(--ink);font:inherit}
+input[type=range]{padding:0}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--inp);color:var(--ink);font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.del{color:var(--bad)}button:disabled{opacity:.5;cursor:not-allowed}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;border-radius:0}.seg button.on{background:var(--acc);color:#fff}
+.res{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.k{border:1px solid var(--line);border-radius:8px;padding:10px}
+.k small{display:block;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.k b{font-size:18px;font-variant-numeric:tabular-nums}.k i{display:block;font-style:normal;color:var(--mut);font-size:12px}
+.k.main{border-color:var(--acc)}
+.note{margin:6px 0;padding:8px 10px;border-left:4px solid var(--mut);background:color-mix(in srgb,var(--mut) 10%,transparent);border-radius:4px;font-size:13px}
+.note.warn{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.note.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)}
+.note.ok{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.mut{color:var(--mut);font-size:12px}
+.bar{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap}
+.tw{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--mut);font-weight:600}
+td.act{text-align:right}td.act button{padding:3px 8px;margin-left:4px}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);width:min(560px,94vw);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+@media(max-width:560px){dialog .row3{grid-template-columns:1fr 1fr}}
+.dact{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.show{opacity:1}
+.stars{color:var(--acc)}
