@@ -303,7 +303,7 @@ def init_db(backup=True):
                 if con.execute("SELECT COUNT(*) c FROM maintenance").fetchone()["c"] == 0:   # new installs and upgrades from version 1
                     for task, days, notes in SEED_MAINTENANCE:
                         insert(con, "maintenance", clean("maintenance", dict(
-                            task=task, interval_days=days, notes=("Suggested: " + notes) if notes else "Suggested task.")))
+                            task=task, interval_days=days, notes=notes)))
                 set_setting(con, "seed_version", SEED_VERSION)
             set_setting(con, "schema", SCHEMA_VERSION)
             touch(con)

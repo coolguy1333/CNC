@@ -5,13 +5,12 @@
 
   const GROUPS = [
     ["CNC Router", ["cnc", "check", "spoil", "holes"]],
-    ["Machining", ["drilltap", "manual"]],
-    ["Fabrication", ["weight", "cutlist", "bend", "convert"]],
+    ["Shop Calculators", ["drilltap", "cutlist", "weight", "bend", "manual", "convert"]],
     ["FRC Engineering", ["drive", "elevator", "arm", "flywheel", "belts", "elec", "pneu", "budget"]],
-    ["Our Shop", ["tools", "tested", "joblog", "inventory", "maint"]],
+    ["Our Shop", ["tools", "tested", "joblog", "inventory", "maint", "settings"]],
     ["Guides", ["safety", "omio", "cam", "trouble", "materials", "links"]],
-    ["Settings", ["settings"]],
   ];
+  const groupOf = id => (GROUPS.find(([, ids]) => ids.includes(id)) || [])[0];
   const DATA_PAGES = new Set(["tools", "tested", "joblog", "inventory", "maint"]);
 
   // ------------------------------------------------------------------ shared data
@@ -67,6 +66,7 @@
     $$("#nav a").forEach(a => a.removeAttribute("aria-current"));
     const link = $(`#nav a[data-id="${id}"]`);
     if (link) link.setAttribute("aria-current", "page");
+    if (App.lastId !== id && groupOf(id)) setGroup(groupOf(id), true);   // the group holding this page is always open
     document.title = page.title + " · Shop Toolkit";
     closeMenu();
     const scroll = window.scrollY;
@@ -88,10 +88,22 @@
   }
 
   // ------------------------------------------------------------------ navigation
+  /** The sidebar: five folders, and only one is open at a time (the one holding the page you're on, unless you open another). */
+  function setGroup(g, open) {
+    $$(".navhead").forEach(h => {
+      const on = open && h.dataset.gh === g;
+      h.setAttribute("aria-expanded", String(on));
+      h.nextElementSibling.hidden = !on;
+    });
+  }
   function buildNav() {
     const nav = $("#nav");
-    nav.innerHTML = GROUPS.map(([g, ids]) => html`<div class="navgroup"><h3>${g}</h3>${ids.filter(i => App.pages[i]).map(i => html`<a href="#/${i}" data-id="${i}">${App.pages[i].title}<span class="badge" data-badge="${i}" hidden></span></a>`)}</div>`.s).join("");
-    $("#nav").insertAdjacentHTML("beforeend", html`<div class="navfoot">No login: anyone on the team can edit shared data. Backups are automatic.</div>`.s);
+    nav.innerHTML = GROUPS.map(([g, ids], n) => html`<div class="navgroup"><button type="button" class="navhead" data-gh="${g}" aria-expanded="false" aria-controls="ng${n}">${g}<span class="badge" data-gbadge="${g}" hidden></span><span class="chev" aria-hidden="true"></span></button><div class="navitems" id="ng${n}" hidden>${ids.filter(i => App.pages[i]).map(i => html`<a href="#/${i}" data-id="${i}">${App.pages[i].title}<span class="badge" data-badge="${i}" hidden></span></a>`)}</div></div>`.s).join("");
+    nav.insertAdjacentHTML("beforeend", html`<div class="navfoot">No login: anyone on the team can edit shared data. Backups are automatic.</div>`.s);
+    nav.addEventListener("click", e => {
+      const h = e.target.closest(".navhead");
+      if (h) setGroup(h.dataset.gh, h.getAttribute("aria-expanded") !== "true");
+    });
   }
   function setBadge(id, n, bad) {
     const b = $(`[data-badge="${id}"]`);
@@ -99,6 +111,14 @@
     b.hidden = !n;
     b.textContent = n || "";
     b.classList.toggle("bad", !!bad);
+    // a folded group shows the total of its pages' alerts, so an overdue task can't hide in a closed folder
+    const g = groupOf(id), gb = g && $(`[data-gbadge="${g}"]`);
+    if (gb) {
+      const total = $$(`.navhead[data-gh="${g}"] + .navitems [data-badge]`).reduce((sum, el) => sum + (parseInt(el.textContent, 10) || 0), 0);
+      gb.hidden = !total;
+      gb.textContent = total || "";
+      gb.classList.add("bad");
+    }
   }
   function updateBadges() {
     if (!App.data) return;

@@ -125,14 +125,17 @@
   function fieldHtml(f, vals) {
     const id = "f_" + f.id, v = vals[f.id];
     const hidden = f.show && !f.show(vals);
+    if (f.hidden) return "";   // remembered with the page's values, never shown
+    const label = typeof f.label === "function" ? f.label(vals) : f.label;
+    const hint = typeof f.hint === "function" ? f.hint(vals) : f.hint;
     const opts = typeof f.options === "function" ? f.options(vals) : f.options;
     let input, unit = "";
     if (f.type === "select") {
       input = html`<select id="${id}" data-f="${f.id}">${opts.map(([val, label]) => html`<option value="${val}"${String(val) === String(v) ? " selected" : ""}>${label}</option>`)}</select>`;
     } else if (f.type === "seg") {
-      input = html`<div class="seg" role="group" aria-label="${f.label}" data-f="${f.id}">${opts.map(([val, label]) => html`<button type="button" aria-pressed="${String(val) === String(v)}" data-v="${val}" class="${String(val) === String(v) ? "on" : ""}">${label}</button>`)}</div>`;
+      input = html`<div class="seg" role="group" aria-label="${label}" data-f="${f.id}">${opts.map(([val, label]) => html`<button type="button" aria-pressed="${String(val) === String(v)}" data-v="${val}" class="${String(val) === String(v) ? "on" : ""}">${label}</button>`)}</div>`;
     } else if (f.type === "check") {
-      input = html`<label class="check"><input type="checkbox" id="${id}" data-f="${f.id}"${v ? " checked" : ""}> <span>${f.checkLabel || f.label}</span></label>`;
+      input = html`<label class="check"><input type="checkbox" id="${id}" data-f="${f.id}"${v ? " checked" : ""}> <span>${f.checkLabel || label}</span></label>`;
     } else if (f.type === "textarea") {
       input = html`<textarea id="${id}" data-f="${f.id}" rows="${f.rows || 2}" maxlength="${f.max || 1000}">${v == null ? "" : v}</textarea>`;
     } else if (f.type === "text" || f.type === "date") {
@@ -144,9 +147,26 @@
       input = html`<input id="${id}" data-f="${f.id}" type="number" inputmode="decimal" step="${f.step || "any"}"${f.min != null ? html` min="${kind ? fmt(U.show(f.type, f.min), 6) : f.min}"` : ""}${f.max != null ? html` max="${kind ? fmt(U.show(f.type, f.max), 6) : f.max}"` : ""} value="${shown}">`;
     }
     const cls = "field" + (f.wide || f.type === "seg" || f.type === "textarea" ? " wide" : "") + (f.type === "check" ? " checkrow" : "");
-    return html`<div class="${cls}" data-for="${f.id}"${hidden ? " hidden" : ""}>${f.type === "check" || f.type === "seg" ? (f.type === "seg" ? html`<span class="lbl">${f.label}</span>` : "") : html`<label for="${id}">${f.label}</label>`}<div class="${unit ? "withunit" : ""}">${input}${unit ? html`<span class="unit">${unit}</span>` : ""}</div>${f.hint ? html`<div class="hint">${f.hint}</div>` : ""}</div>`;
+    return html`<div class="${cls}" data-for="${f.id}"${hidden ? " hidden" : ""}>${f.type === "check" || f.type === "seg" ? (f.type === "seg" ? html`<span class="lbl">${label}</span>` : "") : html`<label for="${id}">${label}</label>`}<div class="${unit ? "withunit" : ""}">${input}${unit ? html`<span class="unit">${unit}</span>` : ""}</div>${hint ? html`<div class="hint">${hint}</div>` : ""}</div>`;
   }
-  const fieldsHtml = (specs, vals) => html`<div class="fields">${specs.map(f => fieldHtml(f, vals))}</div>`;
+  const sameValue = (a, b) => (typeof a === "number" && typeof b === "number" ? Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b)) : a === b || (a == null && b == null));
+  const isLive = (f, vals) => !f.show || f.show(vals);
+  const moreSummary = (label, changed) => html`${label}${changed ? html` <span class="badge info">${changed} changed</span>` : ""}`;
+  /**
+   * The form. Fields marked `adv` go under a "More options" fold so the page only asks for what matters.
+   * The fold opens by itself when one of them is not at its default, unless `opts.open` says otherwise.
+   * opts.label renames it; opts.badge === false hides the "N changed" count (for prefilled dialogs).
+   */
+  function fieldsHtml(specs, vals, opts = {}) {
+    const grid = list => html`<div class="fields">${list.map(f => fieldHtml(f, vals))}</div>`;
+    const adv = specs.filter(f => f.adv);
+    if (!adv.length) return grid(specs);
+    const live = adv.filter(f => isLive(f, vals));
+    const changed = live.filter(f => !sameValue(vals[f.id], f.def)).length;
+    const open = opts.open != null ? opts.open : changed > 0;
+    const label = opts.label || "More options", badge = opts.badge !== false;
+    return html`${grid(specs.filter(f => !f.adv))}<details class="more" data-more data-label="${label}" data-badge="${badge ? 1 : 0}"${live.length ? "" : " hidden"}${open ? " open" : ""}><summary>${moreSummary(label, badge ? changed : 0)}</summary>${grid(adv)}</details>`;
+  }
 
   /** Read one control into `vals` (canonical units). Returns the field id, or null. */
   function readControl(target, specs, vals) {
@@ -174,7 +194,15 @@
   }
   /** Bind a container's controls to `vals`; onChange(id) fires after each edit. Re-binding a container replaces the old listeners. */
   function bindForm(root, specs, vals, onChange) {
-    const refresh = () => specs.forEach(s => { const w = $(`[data-for="${s.id}"]`, root); if (w && s.show) w.hidden = !s.show(vals); });
+    const refresh = () => {
+      specs.forEach(s => { const w = $(`[data-for="${s.id}"]`, root); if (w && s.show) w.hidden = !s.show(vals); });
+      const fold = $("details[data-more]", root);
+      if (fold) {
+        const adv = specs.filter(f => f.adv && isLive(f, vals));
+        fold.hidden = !adv.length;
+        $("summary", fold).innerHTML = moreSummary(fold.dataset.label, fold.dataset.badge === "1" ? adv.filter(f => !sameValue(vals[f.id], f.def)).length : 0).s;
+      }
+    };
     const apply = e => {
       const id = readControl(e.target, specs, vals);
       if (id == null) return;
@@ -202,34 +230,44 @@
    * Checks the visible number boxes before a page calculates.
    * A blank box is `null`. Boxes whose default is 0 (or that say `optional`) mean "off / automatic", so blank is 0;
    * any other blank box, a negative number (unless `allowNegative`), or a value outside min/max stops the calculation with a plain message.
-   * Returns {issues: [text], vals: cleaned copy}.
+   * Returns {issues: [text], bad: [ids of the boxes at fault], vals: cleaned copy}.
    */
   function checkVals(specs, vals) {
-    const clean = Object.assign({}, vals), issues = [];
+    const clean = Object.assign({}, vals), issues = [], bad = [];
     for (const f of specs) {
       if (!isNumericSpec(f) || (f.show && !f.show(vals))) continue;
-      const v = vals[f.id];
-      if (v == null) { if (f.def === 0 || f.optional) clean[f.id] = 0; else issues.push(`Fill in “${f.label}”.`); continue; }
-      if (!isFinite(v)) issues.push(`“${f.label}” isn't a usable number.`);
+      const v = vals[f.id], n = issues.length;
+      if (v == null) { if (f.def === 0 || f.optional) clean[f.id] = 0; else issues.push(`Fill in “${f.label}”.`); }
+      else if (!isFinite(v)) issues.push(`“${f.label}” isn't a usable number.`);
       else if (v < 0 && !f.allowNegative) issues.push(`“${f.label}” can't be negative.`);
       else if (f.min != null && v < f.min - 1e-12) issues.push(`“${f.label}” must be at least ${isKind(f.type) ? U.fmt(f.type, f.min) : fmt(f.min, 4)}.`);
       else if (f.max != null && v > f.max + 1e-12) issues.push(`“${f.label}” must be at most ${isKind(f.type) ? U.fmt(f.type, f.max) : fmt(f.max, 4)}.`);
+      if (issues.length > n) bad.push(f.id);
     }
-    return { issues, vals: clean };
+    return { issues, vals: clean, bad };
   }
 
   // ------------------------------------------------------------------ dialogs
   /**
    * Modal form. fields: specs, values: starting values (canonical). onSubmit(values) may throw to show an error inline.
    */
-  function openForm({ title, fields, values, submit, intro, onSubmit, danger }) {
+  function openForm({ title, fields, values, submit, intro, onSubmit, extra, fold }) {
     const dlg = $("#dlg"), form = $("#dlgForm");
     const vals = Object.assign(defaultsOf(fields), values || {});
     dlg.setAttribute("aria-labelledby", "dlgTitle");
-    form.innerHTML = html`<h2 id="dlgTitle">${title}</h2>${intro ? html`<p class="mut">${intro}</p>` : ""}${fieldsHtml(fields, vals)}<div class="err" role="alert" hidden></div><div class="dact"><button type="button" class="btn" data-cancel>Cancel</button><button class="btn pri" type="submit">${submit || "Save"}</button></div>`.s;
+    const more = (extra || []).map((x, i) => html`<button type="button" class="btn ${x.cls || ""}" data-x="${i}">${x.label}</button>`);
+    form.innerHTML = html`<h2 id="dlgTitle">${title}</h2>${intro ? html`<p class="mut">${intro}</p>` : ""}${fieldsHtml(fields, vals, Object.assign({ open: false, badge: false }, fold))}<div class="err" role="alert" hidden></div><div class="dact">${more.length ? html`<span class="xtra">${more}</span>` : ""}<button type="button" class="btn" data-cancel>Cancel</button><button class="btn pri" type="submit">${submit || "Save"}</button></div>`.s;
     bindForm(form, fields, vals);
     const err = $(".err", form);
     $("[data-cancel]", form).onclick = () => dlg.close();
+    // extra buttons (copy, delete): onClick(values) may return false to keep the dialog open, or throw to show a message
+    $$("[data-x]", form).forEach(b => {
+      b.onclick = async () => {
+        err.hidden = true;
+        try { if ((await extra[+b.dataset.x].onClick(vals)) !== false) dlg.close(); }
+        catch (e) { err.textContent = e.message; err.hidden = false; }
+      };
+    });
     form.onsubmit = async ev => {
       ev.preventDefault();
       const btn = $("button[type=submit]", form);
@@ -250,8 +288,43 @@
   }
   const confirmDialog = msg => Promise.resolve(window.confirm(msg));
 
+  /** Keep what matters in view: every warning, plus the first few tips. The rest sit behind one "more tips" line. */
+  function foldNotes(root, max = 2) {
+    const notes = $$(".note", root).filter(n => !n.closest("details"));
+    if (notes.length <= max) return;
+    const keep = new Set(notes.filter(n => n.classList.contains("bad") || n.classList.contains("warn")));
+    for (const n of notes) { if (keep.size >= max) break; keep.add(n); }
+    const hide = notes.filter(n => !keep.has(n));
+    if (!hide.length) return;
+    const d = document.createElement("details");
+    d.className = "more tips";
+    const sm = document.createElement("summary");
+    sm.textContent = hide.length === 1 ? "1 more tip" : hide.length + " more tips";
+    d.append(sm);
+    hide[0].before(d);
+    hide.forEach(n => d.append(n));
+  }
+
   // ------------------------------------------------------------------ page registry and the standard "form + results" page
   App.register = def => { App.pages[def.id] = def; };
+  /**
+   * Draw a form into `el` and keep `vals` in step with it. `key` names this form so the page can remember whether
+   * "More options" was left open. onChange(id, redraw) runs after every edit. Returns {draw, openMore}.
+   */
+  function mountForm(el, specs, vals, key, onChange) {
+    const moreKey = "more:" + key;
+    el.addEventListener("click", e => {
+      const sm = e.target.closest("details[data-more] > summary");
+      if (sm) store.set(moreKey, !sm.parentElement.open);   // the click is about to flip it (written now, so a quick reload can't lose it)
+    });
+    const draw = () => {
+      el.innerHTML = fieldsHtml(specs, vals, { open: store.get(moreKey, null) }).s;
+      bindForm(el, specs, vals, id => onChange(id, draw));
+    };
+    draw();
+    return { draw, openMore() { const d = $("details[data-more]", el); if (d) d.open = true; } };
+  }
+
   /**
    * cfg: {id, title, keywords, intro, fields | ()=>fields, init(vals), onChange(id, vals) -> "redraw"?, compute(vals) -> html, after(out, vals, root), extra: html}
    */
@@ -262,25 +335,27 @@
         const specs = typeof cfg.fields === "function" ? cfg.fields() : cfg.fields;
         const vals = App.pageVals(cfg.id, specs);
         if (cfg.init) cfg.init(vals);
-        root.innerHTML = html`<h1>${cfg.title}</h1>${cfg.intro ? html`<p class="mut">${cfg.intro}</p>` : ""}
+        root.innerHTML = html`<h1>${cfg.title}</h1>${cfg.intro ? html`<p class="mut lead">${cfg.intro}</p>` : ""}
           <div class="two"><section class="card"><div id="form"></div></section><section class="card" id="out" aria-live="polite"></section></div>${cfg.extra || ""}`.s;
+        let form;
         const update = () => {
           App.persist(cfg.id, vals);
           const out = $("#out", root);
           const chk = checkVals(specs, vals);
           setHtml(out, chk.issues.length ? raw(chk.issues.map(t => note("info", t)).join("")) : cfg.compute(chk.vals) || "");
-          if (cfg.after && !chk.issues.length) cfg.after(out, chk.vals, root);
+          if (chk.issues.length) {
+            if (chk.bad.some(id => (specs.find(f => f.id === id) || {}).adv)) form.openMore();   // the problem is in a tucked-away box: show it
+          } else {
+            foldNotes(out);
+            if (cfg.after) cfg.after(out, chk.vals, root);
+          }
         };
-        const draw = () => {
-          $("#form", root).innerHTML = fieldsHtml(specs, vals).s;
-          bindForm($("#form", root), specs, vals, id => { if (cfg.onChange && cfg.onChange(id, vals) === "redraw") draw(); update(); });
-        };
-        draw();
+        form = mountForm($("#form", root), specs, vals, cfg.id, (id, redraw) => { if (cfg.onChange && cfg.onChange(id, vals) === "redraw") redraw(); update(); });
         update();
       },
     });
   }
 
-  Object.assign(App, { calcPage, checkVals, Raw, raw, esc, html, $, $$, setHtml, fmt, fmtInput, group, KINDS, U, store, toast, copyText, api, download, tile, tiles, note, kvTable, table,
+  Object.assign(App, { calcPage, mountForm, checkVals, foldNotes, Raw, raw, esc, html, $, $$, setHtml, fmt, fmtInput, group, KINDS, U, store, toast, copyText, api, download, tile, tiles, note, kvTable, table,
     fieldHtml, fieldsHtml, readControl, bindForm, defaultsOf, openForm, friendlyError, confirmDialog, isKind });
 })();

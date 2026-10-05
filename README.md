@@ -11,13 +11,22 @@ Python standard library only (HTTP server + SQLite). No login, no build step, no
 
 | Area | Pages |
 | --- | --- |
-| **CNC Router** | **Feeds & Speeds** (pick the material and endmill, get rpm, feed, depth, stepover, plunge/ramp), **Check My Settings** (type in what CAM has, get a "looks good / fix this" verdict), Spoilboard Surfacing (lines, time, sketch), Hole & Tool Size (toolpath circle, measure what an undersized tool really cuts, fits, FRC bearings) |
-| **Machining** | Drill, Tap & Hardware (tap drill, clearance, socket-head counterbore, thread-forming holes, pop-rivet holes); Mill, Drill, Lathe & Saw speeds and bandsaw blade choice |
-| **Fabrication** | Weight & Stock, Cut List optimiser, Sheet Bending, Converter & Fractions (with nearest drill) |
+| **CNC Router** | **Feeds & Speeds** (pick the material and endmill, get rpm, feed, depth, stepover, plunge/ramp), **Check My Settings** (type in what CAM has, get a "looks good / fix this" verdict), Spoilboard Surfacing (lines, time, sketch), Hole & Tool Size (round-hole toolpath, measure what an undersized tool really cuts, fits and FRC bearings) |
+| **Shop Calculators** | Drill, Tap & Hardware (tap drill, clearance, socket-head counterbore, thread-forming holes, pop-rivet holes), Cut List optimiser, Part Weight, Sheet Bending, Mill, Drill, Lathe & Saw speeds and bandsaw blade choice, Converter & Fractions (with nearest drill) |
 | **FRC Engineering** | Drivetrain, Elevator, Arm, Flywheel, Belts & Chain, Wiring & Power, Pneumatics, Weight Budget |
-| **Our Shop** | Tool Library, Tested Settings, Job Log, Inventory (low-stock flags), Maintenance (overdue flags) |
+| **Our Shop** | Tool Library, Tested Settings, Job Log, Inventory (low-stock flags), Maintenance (overdue flags), Settings & Backups (machine limits, snapshots, restore, export/import) |
 | **Guides** | Shop Safety, Running the OMIO X8 (checklists), CAM Checklist (Fusion 360), Troubleshooting, Materials & Terms, Links |
-| **Settings** | Machine & Data: machine limits, backups and restore, export/import |
+
+### Kept simple on purpose
+
+- Each calculator asks only for what matters (for Feeds & Speeds: the material and the endmill). Everything else has a
+  sensible default and sits under **More options**, which opens by itself if you changed something in it.
+- Results lead with the two or three numbers you type into CAM. Warnings are always shown; the longer advice is folded
+  under "more tips".
+- The sidebar is five folders with one open at a time; a closed folder still shows a badge if something inside needs
+  attention (an overdue maintenance task, a low-stock item).
+- Record tables (tools, tested settings, job log, inventory, maintenance) show one **Edit** button per row. Copy and
+  delete are inside the edit dialog.
 
 Materials are deliberately limited to what the shop cuts: **aluminum (6061), polycarbonate, and the MDF spoilboard**
 (surfaced with the facemill).
@@ -71,7 +80,7 @@ server defends itself instead of asking for a login:
 - A strict Content-Security-Policy (no inline scripts or styles) and all stored text is escaped when shown.
 - Parameterised SQL only; static files are served from one folder with path-traversal checks.
 - **Automatic backups** (on start, every few hours of edits, and before any restore/import) with one-click restore
-  and a full JSON export on the Machine & Data page. Deleting something by mistake is recoverable.
+  and a full JSON export on the Settings & Backups page. Deleting something by mistake is recoverable.
 
 If you ever need a locked-down copy, put it behind your reverse proxy's authentication.
 
@@ -89,7 +98,7 @@ static/              the whole front end (plain JS, no build)
   js/cnc.js          router feeds & speeds model, spoilboard planner      (pure, unit-tested)
   js/shop.js         drills, threads, weights, cut list, bending, units   (pure, unit-tested)
   js/frc.js          motors, drivetrain, mechanisms, belts, wiring, air   (pure, unit-tested)
-  js/core.js         safe templating, units, forms, dialogs
+  js/core.js         safe templating, units, forms (with the "More options" fold), dialogs
   js/page_*.js       the pages
 tests/               unittest (server), node:test (calculators, browser via Playwright)
 ```
