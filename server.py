@@ -121,7 +121,7 @@ SEED_MATERIALS = [
     ("Aluminum 6061",        "metal",   1100, 250, 0.019, 0.34, 1.0, 0.15, 0.30, 700),
     ("Brass / Bronze",       "metal",   400, 150, 0.010, 0.20, 0.6, 0.10, 0.30, 1200),
     ("Acrylic (cast)",       "plastic", 1000, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 300),
-    ("Polycarbonate",        "plastic", 1100, 400, 0.030, 0.50, 1.0, 0.30, 0.40, 250),
+    ("Polycarbonate",        "plastic", 1100, 400, 0.045, 0.70, 1.0, 0.30, 0.40, 250),
     ("HDPE / UHMW",          "plastic", 1200, 500, 0.030, 0.60, 1.5, 0.40, 0.50, 150),
     ("Delrin / Acetal",      "plastic", 1000, 400, 0.025, 0.50, 1.2, 0.30, 0.40, 250),
     ("Hardwood",             "wood",    1000, 600, 0.020, 0.60, 1.5, 0.40, 0.50, 60),
@@ -142,9 +142,9 @@ KNOWN_GOOD = [
     ("Thrifty Bot 5 mm", "Aluminum 6061", "slot", dict(
         rpm=24000, feed_mm=1727.2, plunge_mm=508, doc_mm=1.5875, woc_mm=4.6, rating=3,
         notes='Your run: 24,000 rpm, 68 in/min, 0.0625" depth, full slot (0.0028"/tooth).')),
-    ("Thrifty Bot 5 mm", "Polycarbonate", "profile", dict(
-        rpm=24000, feed_mm=3937, plunge_mm=0, doc_mm=3.175, woc_mm=0, rating=3,
-        notes='Your run: 24,000 rpm, 155 in/min, 1/8" depth (0.0065"/tooth). Near the X8 max feed.')),
+    ("Thrifty Bot 5 mm", "Polycarbonate", "slot", dict(
+        rpm=24000, feed_mm=3937, plunge_mm=0, doc_mm=3.175, woc_mm=4.6, rating=3,
+        notes='Your run: 24,000 rpm, 155 in/min, 1/8" depth, full slot (0.0065"/tooth). Near the X8 max feed.')),
 ]
 
 _db_lock = threading.Lock()
