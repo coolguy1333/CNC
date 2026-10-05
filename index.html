@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OMIO Feeds &amp; Speeds</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#14171c;--mut:#5d6672;--line:#dde1e6;--acc:#d9480f;--ok:#2b8a3e;--warn:#e8590c;--bad:#c92a2a;--inp:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#101215;--card:#1a1d22;--ink:#eceff3;--mut:#9aa4b0;--line:#2b3037;--acc:#ff8a4c;--ok:#69db7c;--warn:#ffa94d;--bad:#ff6b6b;--inp:#14171b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:14px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;border-bottom:1px solid var(--line);background:var(--card)}
+h1{font-size:18px;margin:0}h1 span{color:var(--acc)}
+main{max-width:1000px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:1fr 1fr}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+section.full{grid-column:1/-1}
+h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 0 10px}
+label{display:block;font-size:12px;color:var(--mut);margin:8px 0 3px}
+select,input[type=number],input[type=text]{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--inp);color:var(--ink);font:inherit}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{padding:8px 12px;border:1px solid var(--line);border-radius:6px;background:var(--inp);color:var(--ink);font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;border-radius:0}.seg button.on{background:var(--acc);color:#fff}
+.res{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.k{border:1px solid var(--line);border-radius:8px;padding:10px}
+.k small{display:block;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.k b{font-size:22px;font-variant-numeric:tabular-nums}.k i{display:block;font-style:normal;color:var(--mut);font-size:12px}
+.k.main{border-color:var(--acc)}
+.warn{margin:6px 0;padding:8px 10px;border-left:4px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border-radius:4px;font-size:13px}
+.warn.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)}
+.warn.ok{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent)}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}th{color:var(--mut);font-weight:600}
+input[type=range]{width:100%}
+.note{color:var(--mut);font-size:12px;margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>OMIO X8 <span>Feeds &amp; Speeds</span></h1>
+  <div class="seg" id="unitSeg"><button data-u="in" class="on">inch</button><button data-u="mm">mm</button></div>
+</header>
+<main>
+  <section>
+    <h2>Tool</h2>
+    <label>Tool library</label>
+    <select id="tool"></select>
+    <div class="row">
+      <div><label>Diameter (<span class="ul">in</span>)</label><input type="number" id="dia" step="any" min="0"></div>
+      <div><label>Flutes</label><input type="number" id="flutes" step="1" min="1" max="8"></div>
+      <div><label>Flute length (<span class="ul">in</span>)</label><input type="number" id="lcf" step="any" min="0"></div>
+      <div><label>Tool material</label><select id="tmat"><option value="carbide">Carbide</option><option value="hss">HSS</option></select></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="saveTool">Save as custom tool</button>
+      <button id="importBtn">Import .tools file</button>
+    </div>
+    <input type="file" id="importFile" accept=".tools,.json,.zip" hidden>
+  </section>
+
+  <section>
+    <h2>Job</h2>
+    <label>Material</label><select id="mat"></select>
+    <label>Operation</label><select id="op"></select>
+    <div class="row">
+      <div><label>Total depth (<span class="ul">in</span>)</label><input type="number" id="total" step="any" min="0"></div>
+      <div><label>Coolant</label><select id="cool"><option value="flood">Flood / mist</option><option value="air">Air blast</option><option value="none">None</option></select></div>
+    </div>
+    <label>Aggressiveness: <b id="aggV">100%</b></label>
+    <input type="range" id="agg" min="50" max="130" value="100">
+    <div class="note">Lower it if the cut sounds rough or the machine flexes.</div>
+  </section>
+
+  <section class="full">
+    <h2>Machine limits</h2>
+    <div class="row" style="grid-template-columns:repeat(4,1fr)">
+      <div><label>Min RPM</label><input type="number" id="rmin" value="6000"></div>
+      <div><label>Max RPM</label><input type="number" id="rmax" value="24000"></div>
+      <div><label>Max feed (<span class="fl">in/min</span>)</label><input type="number" id="fmax" step="any"></div>
+      <div><label>Stick-out (<span class="ul">in</span>)</label><input type="number" id="stick" step="any"></div>
+    </div>
+  </section>
+
+  <section class="full">
+    <h2>Result</h2>
+    <div class="res" id="res"></div>
+    <div id="warns"></div>
+  </section>
+
+  <section class="full" id="presetBox">
+    <h2>Your saved presets for this tool</h2>
+    <table id="presets"></table>
+    <div class="note">Imported from your Fusion tool library. Compare against the calculated values above.</div>
+  </section>
+</main>
+<script src="tools-data.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+// Material model. fz = tool dia * fzR (chipload ratio at light/normal cut).
+// sfm = surface speed [carbide, hss]; docSlot/docSide in x diameter; woc = side-cut radial engagement x diameter.
+const MATERIALS = {
+  "Aluminum 6061":        {sfm:[800,250], fzR:0.017, docSlot:0.30, docSide:1.0, woc:0.15, plunge:0.3, heat:"metal"},
+  "Brass / Bronze":       {sfm:[400,150], fzR:0.010, docSlot:0.20, docSide:0.6, woc:0.10, plunge:0.3, heat:"metal"},
+  "Acrylic (cast)":       {sfm:[1000,400],fzR:0.020, docSlot:0.50, docSide:1.0, woc:0.30, plunge:0.4, heat:"plastic"},
+  "Polycarbonate":        {sfm:[900,400], fzR:0.020, docSlot:0.50, docSide:1.0, woc:0.30, plunge:0.4, heat:"plastic"},
+  "HDPE / UHMW":          {sfm:[1200,500],fzR:0.030, docSlot:0.60, docSide:1.5, woc:0.40, plunge:0.5, heat:"plastic"},
+  "Delrin / Acetal":      {sfm:[1000,400],fzR:0.025, docSlot:0.50, docSide:1.2, woc:0.30, plunge:0.4, heat:"plastic"},
+  "Hardwood":             {sfm:[1000,600],fzR:0.020, docSlot:0.60, docSide:1.5, woc:0.40, plunge:0.5, heat:"wood"},
+  "Softwood / Plywood":   {sfm:[1200,700],fzR:0.025, docSlot:0.75, docSide:1.5, woc:0.50, plunge:0.5, heat:"wood"},
+  "MDF / Spoilboard":     {sfm:[1000,600],fzR:0.030, docSlot:1.00, docSide:1.5, woc:0.60, plunge:0.5, heat:"wood"},
+  "Foam (XPS / EVA)":     {sfm:[1500,800],fzR:0.050, docSlot:2.00, docSide:3.0, woc:0.80, plunge:0.6, heat:"wood"}
+};
+const OPS = {
+  slot:     {label:"Slot (full width)", ae:()=>1, fz:0.80, doc:"docSlot"},
+  profile:  {label:"Profile / side cut", ae:m=>m.woc, fz:1.0, doc:"docSide"},
+  pocket:   {label:"Pocket clearing", ae:m=>Math.max(m.woc,0.4)*0.9, fz:0.95, doc:"docSlot", docMul:1.3},
+  adaptive: {label:"Adaptive / high-speed", ae:()=>0.10, fz:1.0, doc:"docSide", docMul:1.5},
+  finish:   {label:"Finish pass (wall)", ae:()=>0, fz:0.8, doc:"docSide", docMul:2, aeAbs:0.005, feedMul:0.8}
+};
+const $ = id => document.getElementById(id);
+const S = {unit:"in", tools:[]};
+const MM = 25.4;
+const toU = x => S.unit==="mm" ? x*MM : x;      // inches -> display
+const fromU = x => S.unit==="mm" ? x/MM : x;    // display -> inches
+const fmt = (x,n=3) => (+x).toFixed(n).replace(/\.?0+$/,"") || "0";
+const lenN = () => S.unit==="mm" ? 2 : 4;
+
+function loadTools(){
+  let custom=[]; try{custom=JSON.parse(localStorage.getItem("customTools")||"[]")}catch(e){}
+  S.tools=[...window.DEFAULT_TOOLS.filter(t=>t.type!=="face mill"||true),...custom];
+  const sel=$("tool"); sel.innerHTML="";
+  S.tools.forEach((t,i)=>{const o=document.createElement("option");o.value=i;o.textContent=`${t.name} (${fmt(t.d*MM,2)} mm, ${t.flutes}F)`;sel.appendChild(o)});
+}
+function fillTool(){
+  const t=S.tools[$("tool").value]; if(!t) return;
+  $("dia").value=fmt(toU(t.d),lenN()); $("flutes").value=t.flutes;
+  $("lcf").value=fmt(toU(t.lcf),lenN()); $("tmat").value=t.mat==="hss"?"hss":"carbide";
+  $("stick").value=fmt(toU(Math.min(t.lcf,t.d*3)),lenN());
+  renderPresets();
+}
+function setUnit(u){
+  const keep=readIn(); S.unit=u;
+  document.querySelectorAll("#unitSeg button").forEach(b=>b.classList.toggle("on",b.dataset.u===u));
+  document.querySelectorAll(".ul").forEach(e=>e.textContent=u);
+  document.querySelectorAll(".fl").forEach(e=>e.textContent=u==="mm"?"mm/min":"in/min");
+  $("dia").value=fmt(toU(keep.d),lenN()); $("lcf").value=fmt(toU(keep.lcf),lenN());
+  $("total").value=fmt(toU(keep.total),lenN()); $("stick").value=fmt(toU(keep.stick),lenN());
+  $("fmax").value=fmt(u==="mm"?keep.fmax*MM:keep.fmax,0);
+  renderPresets(); calc();
+}
+function readIn(){
+  return {d:fromU(+$("dia").value),flutes:Math.max(1,+$("flutes").value||1),lcf:fromU(+$("lcf").value),
+    tmat:$("tmat").value,mat:MATERIALS[$("mat").value],matName:$("mat").value,op:OPS[$("op").value],
+    total:fromU(+$("total").value),cool:$("cool").value,agg:+$("agg").value/100,
+    rmin:+$("rmin").value,rmax:+$("rmax").value,
+    fmax:S.unit==="mm"?+$("fmax").value/MM:+$("fmax").value,stick:fromU(+$("stick").value)};
+}
+function compute(p){
+  const m=p.mat,o=p.op,D=p.d, w=[];
+  const sfm=m.sfm[p.tmat==="hss"?1:0]*p.agg;
+  let rpm=sfm*3.8197/D, clamped=false;
+  if(rpm>p.rmax){rpm=p.rmax;clamped=true} if(rpm<p.rmin){rpm=p.rmin;clamped=true}
+  rpm=Math.round(rpm/100)*100;
+  const aeFrac=o.aeAbs?o.aeAbs/D:Math.min(1,o.ae(m));
+  const ae=aeFrac*D;
+  // radial chip-thinning compensation (only below 50% engagement)
+  let thin=1; if(aeFrac<0.5&&aeFrac>0) thin=Math.min(2,1/Math.sqrt(1-Math.pow(1-2*aeFrac,2)));
+  let fz=D*m.fzR*o.fz*thin*p.agg;
+  let feed=rpm*p.flutes*fz*(o.feedMul||1);
+  let capped=false;
+  if(feed>p.fmax){feed=p.fmax;capped=true;fz=feed/(rpm*p.flutes)}
+  const plunge=feed*m.plunge/thin;
+  const ramp=feed*0.5;
+  let doc=D*m[o.doc]*(o.docMul||1)*p.agg;
+  doc=Math.min(doc,p.lcf*0.9);
+  const passes=p.total>0?Math.ceil(p.total/doc-1e-9):0;
+  const docEq=passes?p.total/passes:doc;
+  const actualSfm=rpm*D/3.8197;
+  const mrr=feed*ae*(passes?docEq:doc);
+  // warnings
+  const wr=[];
+  if(clamped) wr.push(["","RPM limited by machine ("+rpm+"). Surface speed is "+Math.round(actualSfm)+" SFM vs. "+Math.round(sfm)+" target."]);
+  if(capped) wr.push(["","Feed capped at your max feed, so chipload fell to "+fmt(fz,4)+" in/tooth."]);
+  if(fz<D*0.004) wr.push(["bad","Chipload is very low; the tool may rub and overheat. Raise feed or lower RPM."]);
+  if(p.stick/D>3) wr.push([p.stick/D>5?"bad":"","Stick-out is "+fmt(p.stick/D,1)+"x diameter; deflection risk. Cut stick-out or reduce DOC/aggressiveness."]);
+  if(p.tmat==="hss"&&m.heat==="metal") wr.push(["","HSS in metal wears fast on a router; carbide is strongly preferred."]);
+  if(m.heat==="metal"&&p.cool==="none") wr.push(["bad","Metal with no coolant or air: chips will recut and weld to the tool. Use air blast at minimum."]);
+  if(m.heat==="plastic"&&p.cool==="none") wr.push(["","Plastics melt without chip evacuation; use air blast."]);
+  if(m.heat==="metal"&&o.ae(m)>=1&&!o.aeAbs) wr.push(["","Full slotting in metal: keep DOC shallow, use air/coolant, and expect to listen for chatter."]);
+  if(p.flutes>1&&m.heat==="metal"&&p.d<0.15) wr.push(["","Small multi-flute tools can clog in aluminum. Single flute clears chips better."]);
+  if(!wr.length) wr.push(["ok","No red flags. Treat as a starting point and adjust by sound and finish."]);
+  return {rpm,feed,plunge,ramp,fz,doc:docEq,passes,ae,aeFrac,thin,sfm:actualSfm,mrr,wr};
+}
+const U = {
+  feed:x=>S.unit==="mm"?`${fmt(x*MM,0)} mm/min`:`${fmt(x,1)} in/min`,
+  len:x=>S.unit==="mm"?`${fmt(x*MM,2)} mm`:`${fmt(x,4)} in`,
+  alt:x=>S.unit==="mm"?`${fmt(x,1)} in/min`:`${fmt(x*MM,0)} mm/min`,
+  altLen:x=>S.unit==="mm"?`${fmt(x,4)} in`:`${fmt(x*MM,2)} mm`
+};
+function calc(){
+  const p=readIn();
+  if(!(p.d>0)||!(p.lcf>0)||!(p.fmax>0)){$("res").innerHTML="";$("warns").innerHTML="<div class='warn bad'>Enter a valid diameter, flute length and max feed.</div>";return}
+  const r=compute(p);
+  const k=(t,v,s,c="")=>`<div class="k ${c}"><small>${t}</small><b>${v}</b><i>${s}</i></div>`;
+  $("res").innerHTML=
+    k("Spindle",r.rpm.toLocaleString()+" rpm",Math.round(r.sfm)+" SFM","main")+
+    k("Cutting feed",U.feed(r.feed),U.alt(r.feed),"main")+
+    k("Plunge",U.feed(r.plunge),U.alt(r.plunge))+
+    k("Ramp feed",U.feed(r.ramp),U.alt(r.ramp))+
+    k("Chipload",fmt(S.unit==="mm"?r.fz*MM:r.fz,S.unit==="mm"?3:4)+(S.unit==="mm"?" mm/tooth":" in/tooth"),r.thin>1.01?"incl. chip-thin x"+fmt(r.thin,2):"per tooth")+
+    k("Depth / pass",U.len(r.doc),(r.passes?r.passes+" pass"+(r.passes>1?"es":""):"set total depth")+" • "+U.altLen(r.doc))+
+    k("Width of cut",r.ae>0?U.len(r.ae):"-",Math.round(r.aeFrac*100)+"% of dia")+
+    k("Removal rate",fmt(r.mrr,3)+" in³/min",fmt(r.mrr*16.387,1)+" cm³/min");
+  $("warns").innerHTML=r.wr.map(([c,t])=>`<div class="warn ${c}">${t}</div>`).join("");
+}
+function renderPresets(){
+  const t=S.tools[$("tool").value]; const tb=$("presets"); if(!t){return}
+  $("presetBox").style.display=t.presets&&t.presets.length?"":"none";
+  const L=x=>S.unit==="mm"?`${fmt(x*MM,0)} mm/min`:`${fmt(x,1)} in/min`;
+  tb.innerHTML="<tr><th>Preset</th><th>RPM</th><th>Feed</th><th>Plunge</th><th>Chipload</th></tr>"+
+    (t.presets||[]).map(p=>`<tr><td>${p.name}</td><td>${p.rpm}</td><td>${L(p.feed)}</td><td>${L(p.plunge)}</td><td>${S.unit==="mm"?fmt(p.fz*MM,3)+" mm":fmt(p.fz,4)+" in"}</td></tr>`).join("");
+}
+function saveTool(){
+  const p=readIn(); const name=prompt("Name for this tool:",`${fmt(p.d*MM,1)} mm endmill`); if(!name) return;
+  let custom=[]; try{custom=JSON.parse(localStorage.getItem("customTools")||"[]")}catch(e){}
+  custom.push({name,type:"flat end mill",d:p.d,flutes:p.flutes,lcf:p.lcf,mat:p.tmat,presets:[]});
+  try{localStorage.setItem("customTools",JSON.stringify(custom))}catch(e){alert("Could not save (storage blocked).");return}
+  loadTools(); $("tool").value=S.tools.length-1; fillTool(); calc();
+}
+async function importTools(file){
+  try{
+    let txt;
+    if(file.name.endsWith(".json")) txt=await file.text();
+    else{const z=await JSZip.loadAsync(file); const f=z.file("tools.json")||Object.values(z.files).find(f=>f.name.endsWith(".json")); txt=await f.async("string")}
+    const data=JSON.parse(txt).data; if(!Array.isArray(data)) throw 0;
+    const conv=data.map(t=>{const g=t.geometry,k=t.unit==="millimeters"?1/MM:1;
+      return {name:(t.description||"Tool").trim(),type:t.type,d:g.DC*k,flutes:g.NOF||1,lcf:g.LCF*k,mat:t.BMC==="hss"?"hss":"carbide",
+        presets:((t["start-values"]||{}).presets||[]).map(p=>({name:p.name,rpm:Math.round(p.n),feed:p.v_f*k,plunge:p.v_f_plunge*k,fz:p.f_z*k}))}});
+    localStorage.setItem("customTools",JSON.stringify(conv));
+    loadTools(); fillTool(); calc();
+  }catch(e){alert("Could not read that tool file.")}
+}
+function init(){
+  Object.keys(MATERIALS).forEach(n=>{const o=document.createElement("option");o.textContent=n;$("mat").appendChild(o)});
+  Object.entries(OPS).forEach(([k,v])=>{const o=document.createElement("option");o.value=k;o.textContent=v.label;$("op").appendChild(o)});
+  $("total").value=0.25; $("fmax").value=250;
+  loadTools();
+  // default to the 4.6 mm tool if present
+  const i=S.tools.findIndex(t=>Math.abs(t.d*MM-4.6)<0.05); if(i>=0) $("tool").value=i;
+  fillTool();
+  document.querySelectorAll("#unitSeg button").forEach(b=>b.onclick=()=>setUnit(b.dataset.u));
+  ["dia","flutes","lcf","tmat","mat","op","total","cool","rmin","rmax","fmax","stick"].forEach(id=>$(id).addEventListener("input",calc));
+  $("agg").addEventListener("input",()=>{$("aggV").textContent=$("agg").value+"%";calc()});
+  $("tool").addEventListener("change",()=>{fillTool();calc()});
+  $("saveTool").onclick=saveTool;
+  $("importBtn").onclick=()=>$("importFile").click();
+  $("importFile").onchange=e=>e.target.files[0]&&importTools(e.target.files[0]);
+  calc();
+}
+init();
+</script>
+</body>
+</html>
