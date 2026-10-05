@@ -128,10 +128,11 @@ SEED_MATERIALS = [
     ("Softwood / Plywood",   "wood",    1200, 700, 0.025, 0.75, 1.5, 0.50, 0.50, 40),
     ("MDF / Spoilboard",     "wood",    1000, 600, 0.030, 1.00, 1.5, 0.60, 0.50, 50),
     ("Foam (XPS / EVA)",     "wood",    1500, 800, 0.050, 2.00, 3.0, 0.80, 0.60, 5),
+    ("Polypropylene (SRPP)", "plastic", 1200, 500, 0.030, 0.60, 1.5, 0.40, 0.50, 150),
 ]
 
 MAT_KEYS = ["name", "heat", "sfm_carbide", "sfm_hss", "fz_ratio", "doc_slot", "doc_side", "woc", "plunge", "kc"]
-SEED_VERSION = 3
+SEED_VERSION = 4
 # Earlier seed rows -> current ones. Applied only to rows the user never edited.
 MATERIAL_UPGRADES = [
     ("Aluminum 6061", "metal", 800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700),
@@ -145,6 +146,28 @@ KNOWN_GOOD = [
     ("Thrifty Bot 5 mm", "Polycarbonate", "slot", dict(
         rpm=24000, feed_mm=3937, plunge_mm=0, doc_mm=3.175, woc_mm=4.6, rating=3,
         notes='Your run: 24,000 rpm, 155 in/min, 1/8" depth, full slot (0.0065"/tooth). Near the X8 max feed.')),
+]
+
+IN_MM = 25.4
+
+
+def _preset(tool, mat, rpm, feed, plunge, woc, note, ipm=False):
+    k = IN_MM if ipm else 1
+    return (tool, mat, "slot", dict(rpm=rpm, feed_mm=round(feed * k, 1), plunge_mm=round(plunge * k, 1), doc_mm=0,
+                                    woc_mm=woc, rating=3, notes="From omio-tools.tools preset (tested). " + note))
+
+
+_NODOC = "Depth of cut not recorded in the file."
+KNOWN_GOOD += [
+    _preset("Thrifty Bot 5 mm", "Polypropylene (SRPP)", 22000, 2032, 1016, 4.6, _NODOC),
+    _preset("Thrifty Bot 4 mm", "Aluminum 6061", 20000, 1320.8, 508, 3.7, _NODOC),
+    _preset("Thrifty Bot 4 mm", "Polycarbonate", 20000, 2286, 1016, 3.7, _NODOC),
+    _preset("6 mm endmill", "Aluminum 6061", 11000, 254, 254, 6.0, _NODOC),
+    _preset("6 mm endmill", "Polycarbonate", 22000, 3937, 254, 6.0, _NODOC),
+    _preset('1/8" endmill', "Aluminum 6061", 9500, 10, 10, 2.845, _NODOC, ipm=True),
+    _preset('1/8" endmill', "Polycarbonate", 20000, 40, 10, 2.845, _NODOC, ipm=True),
+    _preset('1/8" endmill (undersized', "Aluminum 6061", 9500, 10, 10, 3.124, _NODOC, ipm=True),
+    _preset('1/8" endmill (undersized', "Polycarbonate", 20000, 40, 10, 3.124, _NODOC, ipm=True),
 ]
 
 _db_lock = threading.Lock()
@@ -207,6 +230,9 @@ def upgrade_seed(con):
         sets = ",".join(f"{k}=?" for k in MAT_KEYS[1:])
         for r in con.execute(f"SELECT id FROM materials WHERE {cond}", old).fetchall():
             con.execute(f"UPDATE materials SET {sets},updated_at=? WHERE id=?", list(new[1:]) + [time.time(), r["id"]])
+    for m in SEED_MATERIALS:
+        if not con.execute("SELECT 1 FROM materials WHERE name=?", (m[0],)).fetchone():
+            insert(con, "materials", clean("materials", dict(zip(MAT_KEYS, m))))
     for tool_prefix, mat_name, op, fields in KNOWN_GOOD:
         tool = con.execute("SELECT id FROM tools WHERE name LIKE ? ORDER BY id LIMIT 1", (tool_prefix + "%",)).fetchone()
         mat = con.execute("SELECT id FROM materials WHERE name=? ORDER BY id LIMIT 1", (mat_name,)).fetchone()

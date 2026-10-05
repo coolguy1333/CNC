@@ -48,7 +48,7 @@ class ApiTest(unittest.TestCase):
         s, st, _ = self.req("GET", "/api/state")
         names = [t["name"] for t in st["tools"]]
         self.assertTrue(any("Thrifty Bot 5 mm" in n for n in names))
-        self.assertEqual(len(st["materials"]), 10)
+        self.assertEqual(len(st["materials"]), 11)
         self.assertFalse(st["admin"])
 
     def test_write_needs_login(self):
