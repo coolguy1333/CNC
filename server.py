@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""CNC Feeds & Speeds: tiny stdlib-only web app (HTTP + SQLite).
+"""Shop Toolkit for an FRC team shop: tiny stdlib-only web app (HTTP + SQLite).
 
-Runs under WebManager app hosting: listens on $HOST:$PORT, keeps data in
-$DATA_DIR, answers /api/health, and stops cleanly on SIGTERM.
-Reading is public; changing tools/materials/recipes/settings needs the
-ADMIN_PASSWORD.
+There is no login. Anyone who can open the page can use and edit everything.
+That is deliberate (the data is shop notes, not secrets), so the server defends
+itself instead: strict input validation, size and row caps, a per-IP write rate
+limit, same-origin checks, automatic backups and one-click restore.
+
+Run:  DATA_DIR=./data python3 server.py     (http://localhost:8080)
 """
 import contextlib
-import hashlib
-import hmac
+import datetime
+import gzip
 import json
+import math
 import mimetypes
 import os
-import secrets
+import re
 import signal
 import sqlite3
 import threading
@@ -20,164 +23,156 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlsplit
 
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE / "data"))
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-COOKIE = "cnc_session"
-SESSION_SECONDS = 7 * 24 * 3600
-MAX_BODY = 1_000_000
+DB_FILE = "cnc.sqlite3"
+MAX_BODY = 256 * 1024            # normal writes
+MAX_IMPORT = 8 * 1024 * 1024     # backup restore
+BACKUP_KEEP = 20
+AUTO_BACKUP_SECONDS = 6 * 3600
+RATE_CAP = 90                    # write requests per IP: burst size ...
+RATE_REFILL = 1.0                # ... and sustained requests per second
+ALLOWED_HOSTS = {h.strip().lower() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()}
+APP_VERSION = "2.0"
+SCHEMA_VERSION = 2
+SEED_VERSION = 6
 
 # --------------------------------------------------------------------------
-# Schema. Each field: (name, kind, default, min, max / choices)
-# kinds: str, int, float, enum
+# Data model. Every table is described once; validation, SQL and the UI's
+# forms all follow from these specs.
 # --------------------------------------------------------------------------
-KINDS = ["flat", "ball", "face", "bull", "other"]
-HEAT = ["metal", "plastic", "wood"]
-OPS = ["slot", "profile", "pocket", "adaptive", "finish"]
+MATERIALS = ["aluminum", "polycarbonate", "spoilboard"]
+OPS = ["slot", "pocket", "profile", "adaptive", "finish", "surface"]
+KINDS = ["flat", "ball", "bull", "face", "drill", "other"]
+IGNORED_KEYS = {"id", "updated_at"}
+
+
+def s_(name, default="", lo=0, hi=200):
+    return dict(name=name, kind="str", default=default, lo=lo, hi=hi)
+
+
+def n_(name, default, lo, hi, integer=False):
+    return dict(name=name, kind="int" if integer else "float", default=default, lo=lo, hi=hi)
+
+
+def e_(name, default, options):
+    return dict(name=name, kind="enum", default=default, options=options)
+
+
+def d_(name, default=""):
+    return dict(name=name, kind="date", default=default)
+
+
+def r_(name, table, optional=False):
+    return dict(name=name, kind="ref", default=0, table=table, optional=optional)
+
 
 ENTITIES = {
-    "tools": {
-        "fields": [
-            ("name", "str", "", 1, 120),
-            ("vendor", "str", "", 0, 120),
-            ("kind", "enum", "flat", KINDS, None),
-            ("nominal_mm", "float", 3.0, 0.1, 200),
-            ("actual_mm", "float", 3.0, 0.1, 200),
-            ("flutes", "int", 1, 1, 12),
-            ("flute_len_mm", "float", 10.0, 0.1, 300),
-            ("overall_mm", "float", 40.0, 0, 500),
-            ("shank_mm", "float", 0.0, 0, 50),
-            ("mat", "enum", "carbide", ["carbide", "hss"], None),
-            ("coating", "str", "", 0, 60),
-            ("feed_factor", "float", 1.0, 0.2, 2.0),
-            ("notes", "str", "", 0, 1000),
-        ],
-    },
-    "materials": {
-        "fields": [
-            ("name", "str", "", 1, 120),
-            ("heat", "enum", "metal", HEAT, None),
-            ("sfm_carbide", "float", 500, 10, 5000),
-            ("sfm_hss", "float", 200, 10, 3000),
-            ("fz_ratio", "float", 0.015, 0.001, 0.2),
-            ("doc_slot", "float", 0.3, 0.02, 5),
-            ("doc_side", "float", 1.0, 0.02, 6),
-            ("woc", "float", 0.15, 0.01, 1),
-            ("plunge", "float", 0.3, 0.05, 1),
-            ("kc", "float", 700, 5, 4000),
-            ("notes", "str", "", 0, 1000),
-        ],
-    },
-    "recipes": {
-        "fields": [
-            ("tool_id", "int", 0, 1, 10**9),
-            ("material_id", "int", 0, 1, 10**9),
-            ("op", "enum", "profile", OPS, None),
-            ("rpm", "float", 0, 0, 100000),
-            ("feed_mm", "float", 0, 0, 100000),
-            ("plunge_mm", "float", 0, 0, 100000),
-            ("doc_mm", "float", 0, 0, 500),
-            ("woc_mm", "float", 0, 0, 500),
-            ("rating", "int", 3, 1, 5),
-            ("notes", "str", "", 0, 1000),
-        ],
-    },
+    "tools": {"cap": 500, "fields": [
+        s_("name", "", 1, 120), s_("vendor", "", 0, 120), e_("kind", "flat", KINDS),
+        n_("nominal_mm", 3.0, 0.1, 200), n_("actual_mm", 3.0, 0.1, 200), n_("flutes", 1, 1, 12, True),
+        n_("flute_len_mm", 10.0, 0.1, 300), n_("overall_mm", 40.0, 0, 500), n_("shank_mm", 0.0, 0, 50),
+        e_("mat", "carbide", ["carbide", "hss"]), s_("coating", "", 0, 60),
+        n_("feed_factor", 1.0, 0.2, 2.0), s_("notes", "", 0, 1000)]},
+    "recipes": {"cap": 3000, "fields": [
+        r_("tool_id", "tools"), e_("material", "aluminum", MATERIALS), e_("op", "slot", OPS), s_("label", "", 0, 60),
+        n_("rpm", 0, 0, 100000), n_("feed_mm", 0, 0, 100000), n_("plunge_mm", 0, 0, 100000), n_("ramp_mm", 0, 0, 100000),
+        n_("doc_mm", 0, 0, 500), n_("woc_mm", 0, 0, 500), n_("rating", 3, 1, 5, True), s_("notes", "", 0, 1000)]},
+    "joblog": {"cap": 5000, "fields": [
+        d_("date"), s_("name", "", 1, 120), s_("operator", "", 0, 60), e_("material", "aluminum", MATERIALS),
+        r_("tool_id", "tools", True), n_("thickness_mm", 0, 0, 500), n_("rpm", 0, 0, 100000), n_("feed_mm", 0, 0, 100000),
+        n_("doc_mm", 0, 0, 500), n_("minutes", 0, 0, 100000), e_("result", "ok", ["great", "ok", "bad"]), s_("notes", "", 0, 1000)]},
+    "inventory": {"cap": 3000, "fields": [
+        e_("category", "stock", ["stock", "endmill", "hardware", "consumable", "other"]), s_("name", "", 1, 120),
+        n_("qty", 0, 0, 1e7), s_("unit", "ea", 0, 20), n_("min_qty", 0, 0, 1e7), s_("location", "", 0, 80), s_("notes", "", 0, 1000)]},
+    "maintenance": {"cap": 500, "fields": [
+        s_("task", "", 1, 120), s_("machine", "OMIO X8", 0, 60), n_("interval_days", 0, 0, 3650, True),
+        d_("last_done"), s_("notes", "", 0, 1000)]},
 }
 
 SETTINGS_DEFAULTS = {
-    "min_rpm": 5000.0,
-    "max_rpm": 24000.0,
-    "max_feed_mm": 4000.0,
-    "spindle_w": 2200.0,
-    "defl_limit_mm": 0.02,
-    "units": "mm",
+    "units": "in", "min_rpm": 5000.0, "max_rpm": 24000.0, "max_feed_mm": 4000.0, "spindle_w": 2200.0,
+    "defl_limit_mm": 0.02, "table_x_mm": 565.0, "table_y_mm": 770.0, "z_travel_mm": 85.0, "weight_limit_lb": 115.0,
 }
 SETTINGS_LIMITS = {
-    "min_rpm": (0, 100000), "max_rpm": (100, 100000), "max_feed_mm": (10, 100000),
-    "spindle_w": (10, 100000), "defl_limit_mm": (0.001, 1),
+    "min_rpm": (0, 100000), "max_rpm": (100, 100000), "max_feed_mm": (10, 100000), "spindle_w": (10, 100000),
+    "defl_limit_mm": (0.001, 1), "table_x_mm": (50, 5000), "table_y_mm": (50, 5000), "z_travel_mm": (5, 1000),
+    "weight_limit_lb": (1, 1000),
 }
+HIDDEN_SETTINGS = ("schema", "seed_version", "rev")
 
+# --------------------------------------------------------------------------
+# Built-in data: the team's tool library and tested settings (from the Fusion
+# tool library the team supplied), plus suggested maintenance tasks.
+# --------------------------------------------------------------------------
 SEED_TOOLS = [
-    dict(name="Thrifty Bot 5 mm (undersized)", vendor="Thrifty Bot", kind="flat", nominal_mm=5.0, actual_mm=4.6,
-         flutes=1, flute_len_mm=12, overall_mm=50, shank_mm=5.0, mat="carbide", coating="Diamond grit",
-         notes="Measured/real cutting diameter is 4.6 mm. Use 4.6 mm in CAM."),
-    dict(name="Thrifty Bot 4 mm (undersized)", vendor="Thrifty Bot", kind="flat", nominal_mm=4.0, actual_mm=3.7,
-         flutes=1, flute_len_mm=12, overall_mm=50, shank_mm=4.0, mat="hss", coating="Diamond grit",
-         notes="Real cutting diameter 3.7 mm. Listed as HSS in the original library; change to carbide if it is."),
-    dict(name='1/8" endmill', vendor="", kind="flat", nominal_mm=3.175, actual_mm=2.845,
-         flutes=1, flute_len_mm=20, overall_mm=50, shank_mm=3.175, mat="hss"),
-    dict(name='1/8" endmill (undersized, careful)', vendor="", kind="flat", nominal_mm=3.175, actual_mm=3.124,
-         flutes=1, flute_len_mm=20, overall_mm=50, shank_mm=3.175, mat="hss"),
-    dict(name="6 mm endmill", vendor="", kind="flat", nominal_mm=6.0, actual_mm=6.0,
-         flutes=1, flute_len_mm=20, overall_mm=50, shank_mm=6.0, mat="carbide"),
-    dict(name='2.5" facemill', vendor="", kind="face", nominal_mm=63.5, actual_mm=63.5,
-         flutes=4, flute_len_mm=12.7, overall_mm=50, shank_mm=0, mat="hss"),
+    dict(name="Thrifty Bot 5 mm", vendor="Thrifty Bot", kind="flat", nominal_mm=5.0, actual_mm=4.6, flutes=1,
+         flute_len_mm=12, overall_mm=50, shank_mm=5.0, mat="carbide", coating="Diamond grit",
+         notes="Single flute. Real cutting diameter is 4.6 mm, so use 4.6 mm in CAM."),
+    dict(name="Thrifty Bot 4 mm", vendor="Thrifty Bot", kind="flat", nominal_mm=4.0, actual_mm=3.7, flutes=1,
+         flute_len_mm=12, overall_mm=45, shank_mm=4.0, mat="carbide", coating="Diamond grit",
+         notes="Single flute. Real cutting diameter is 3.7 mm, so use 3.7 mm in CAM."),
+    dict(name='1/8" endmill', kind="flat", nominal_mm=3.175, actual_mm=2.845, flutes=1, flute_len_mm=20,
+         overall_mm=50, shank_mm=3.175, mat="hss", notes="Measured 0.112 in."),
+    dict(name='1/8" endmill (undersized, careful)', kind="flat", nominal_mm=3.175, actual_mm=3.124, flutes=1,
+         flute_len_mm=20, overall_mm=50, shank_mm=3.175, mat="hss", notes="Measured 0.123 in."),
+    dict(name="6 mm endmill", kind="flat", nominal_mm=6.0, actual_mm=6.0, flutes=1, flute_len_mm=20,
+         overall_mm=50, shank_mm=6.0, mat="carbide"),
+    dict(name='2.5" facemill', kind="face", nominal_mm=63.5, actual_mm=63.5, flutes=4, flute_len_mm=12.7,
+         overall_mm=50, shank_mm=12.7, mat="hss", notes="Spoilboard surfacing."),
 ]
-#           name,                 heat,      sfmC, sfmH, fz,    slot, side, woc,  plunge, kc
-SEED_MATERIALS = [
-    ("Aluminum 6061",        "metal",   1100, 250, 0.019, 0.34, 1.0, 0.15, 0.30, 700),
-    ("Brass / Bronze",       "metal",   400, 150, 0.010, 0.20, 0.6, 0.10, 0.30, 1200),
-    ("Acrylic (cast)",       "plastic", 1000, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 300),
-    ("Polycarbonate",        "plastic", 1100, 400, 0.045, 0.70, 1.0, 0.30, 0.40, 250),
-    ("HDPE / UHMW",          "plastic", 1200, 500, 0.030, 0.60, 1.5, 0.40, 0.50, 150),
-    ("Delrin / Acetal",      "plastic", 1000, 400, 0.025, 0.50, 1.2, 0.30, 0.40, 250),
-    ("Hardwood",             "wood",    1000, 600, 0.020, 0.60, 1.5, 0.40, 0.50, 60),
-    ("Softwood / Plywood",   "wood",    1200, 700, 0.025, 0.75, 1.5, 0.50, 0.50, 40),
-    ("MDF / Spoilboard",     "wood",    1000, 600, 0.030, 1.00, 1.5, 0.60, 0.50, 50),
-    ("Foam (XPS / EVA)",     "wood",    1500, 800, 0.050, 2.00, 3.0, 0.80, 0.60, 5),
-    ("Polypropylene (SRPP)", "plastic", 1200, 500, 0.030, 0.60, 1.5, 0.40, 0.50, 150),
+_LIB = "From the team's Fusion tool library (tested)."
+# tool name, material, op, label, rpm, feed mm/min, plunge, ramp, doc, woc, notes
+SEED_RECIPES = [
+    ("Thrifty Bot 5 mm", "aluminum", "slot", "Aluminum", 24000, 1727.2, 508, 1143, 1.5875, 4.6,
+     _LIB + ' Full slot, 1/16" per pass (68 in/min, 0.0028"/tooth).'),
+    ("Thrifty Bot 5 mm", "polycarbonate", "slot", "Poly", 24000, 3937, 1016, 3048, 3.175, 4.6,
+     _LIB + ' Full slot, 1/8" per pass (155 in/min). Near the X8 max feed.'),
+    ("Thrifty Bot 4 mm", "aluminum", "slot", "Aluminum", 20000, 1320.8, 508, 889, 0, 3.7, _LIB),
+    ("Thrifty Bot 4 mm", "polycarbonate", "slot", "Poly", 20000, 2286, 1016, 1524, 0, 3.7, _LIB),
+    ("6 mm endmill", "aluminum", "slot", "Aluminum", 11000, 254, 254, 254, 0, 6, _LIB),
+    ("6 mm endmill", "polycarbonate", "slot", "Poly", 22000, 3937, 254, 2032, 0, 6, _LIB),
+    ('1/8" endmill', "aluminum", "slot", "Aluminum", 9500, 254, 254, 254, 0, 2.845, _LIB),
+    ('1/8" endmill', "aluminum", "slot", ".19 Aluminum", 24000, 1016, 254, 1016, 0, 2.845,
+     _LIB + ' Preset is named ".19 Aluminum" there.'),
+    ('1/8" endmill', "polycarbonate", "slot", "Poly", 20000, 1016, 254, 1016, 0, 2.845, _LIB),
+    ('1/8" endmill (undersized', "aluminum", "slot", "Aluminum", 9500, 254, 254, 254, 0, 3.124, _LIB),
+    ('1/8" endmill (undersized', "polycarbonate", "slot", "Poly", 20000, 1016, 254, 1016, 0, 3.124, _LIB),
+    ('2.5" facemill', "spoilboard", "surface", "Default preset", 5000, 762, 338.7, 338.7, 0, 0,
+     _LIB + " 0.0015\"/tooth, 4 flutes (30 in/min)."),
 ]
-
-MAT_KEYS = ["name", "heat", "sfm_carbide", "sfm_hss", "fz_ratio", "doc_slot", "doc_side", "woc", "plunge", "kc"]
-SEED_VERSION = 5
-# Earlier seed rows -> current ones. Applied only to rows the user never edited.
-MATERIAL_UPGRADES = [
-    ("Aluminum 6061", "metal", 800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700),
-    ("Polycarbonate", "plastic", 900, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 250),
-]
-# Settings the user reported working: (tool name prefix, material, op, fields)
-KNOWN_GOOD = [
-    ("Thrifty Bot 5 mm", "Aluminum 6061", "slot", dict(
-        rpm=24000, feed_mm=1727.2, plunge_mm=508, doc_mm=1.5875, woc_mm=4.6, rating=3,
-        notes='Your run: 24,000 rpm, 68 in/min, 0.0625" depth, full slot (0.0028"/tooth).')),
-    ("Thrifty Bot 5 mm", "Polycarbonate", "slot", dict(
-        rpm=24000, feed_mm=3937, plunge_mm=0, doc_mm=3.175, woc_mm=4.6, rating=3,
-        notes='Your run: 24,000 rpm, 155 in/min, 1/8" depth, full slot (0.0065"/tooth). Near the X8 max feed.')),
+SEED_MAINTENANCE = [
+    ("Vacuum chips off the table, rails and covers", 7, "After each session is even better."),
+    ("Check spindle cooling (water level, pump running, hoses)", 30, "Check before every long job too."),
+    ("Clean ER20 collets and nut, check for wear or rust", 30, ""),
+    ("Wipe and lubricate linear rails and ball screws", 30, "Use what the OMIO manual says; adjust the interval to how much you run it."),
+    ("Resurface the spoilboard", 90, "Sooner if cuts stop going through cleanly or the board is deeply grooved."),
+    ("Test the E-stop and check cables, couplers and set screws", 90, ""),
 ]
 
-IN_MM = 25.4
+# --------------------------------------------------------------------------
+# Database
+# --------------------------------------------------------------------------
+_db_lock = threading.RLock()
+_last_backup = [0.0]
 
 
-def _preset(tool, mat, rpm, feed, plunge, woc, note, ipm=False):
-    k = IN_MM if ipm else 1
-    return (tool, mat, "slot", dict(rpm=rpm, feed_mm=round(feed * k, 1), plunge_mm=round(plunge * k, 1), doc_mm=0,
-                                    woc_mm=woc, rating=3, notes="From omio-tools.tools preset (tested). " + note))
+class ValidationError(ValueError):
+    pass
 
 
-_NODOC = "Depth of cut not recorded in the file."
-KNOWN_GOOD += [
-    _preset("Thrifty Bot 5 mm", "Polypropylene (SRPP)", 22000, 2032, 1016, 4.6, _NODOC),
-    _preset("Thrifty Bot 4 mm", "Aluminum 6061", 20000, 1320.8, 508, 3.7, _NODOC),
-    _preset("Thrifty Bot 4 mm", "Polycarbonate", 20000, 2286, 1016, 3.7, _NODOC),
-    _preset("6 mm endmill", "Aluminum 6061", 11000, 254, 254, 6.0, _NODOC),
-    _preset("6 mm endmill", "Polycarbonate", 22000, 3937, 254, 6.0, _NODOC),
-    _preset('1/8" endmill', "Aluminum 6061", 9500, 10, 10, 2.845, _NODOC, ipm=True),
-    _preset('1/8" endmill', "Polycarbonate", 20000, 40, 10, 2.845, _NODOC, ipm=True),
-    _preset('1/8" endmill (undersized', "Aluminum 6061", 9500, 10, 10, 3.124, _NODOC, ipm=True),
-    _preset('1/8" endmill (undersized', "Polycarbonate", 20000, 40, 10, 3.124, _NODOC, ipm=True),
-]
-
-_db_lock = threading.Lock()
+def db_path():
+    return DATA_DIR / DB_FILE
 
 
 @contextlib.contextmanager
 def connect():
     """Open the DB; commit on success, roll back on error, always close."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DATA_DIR / "cnc.sqlite3", timeout=10)
+    con = sqlite3.connect(db_path(), timeout=10)
     con.row_factory = sqlite3.Row
     try:
         con.execute("PRAGMA journal_mode=WAL")
@@ -191,126 +186,302 @@ def connect():
 
 
 def sql_type(kind):
-    return {"str": "TEXT", "enum": "TEXT", "int": "INTEGER", "float": "REAL"}[kind]
+    return {"str": "TEXT", "enum": "TEXT", "date": "TEXT", "int": "INTEGER", "ref": "INTEGER", "float": "REAL"}[kind]
 
 
 def sql_default(f):
-    if f[1] in ("str", "enum"):
-        return "'" + str(f[2]).replace("'", "''") + "'"
-    return repr(f[2])
+    if f["kind"] in ("str", "enum", "date"):
+        return "'" + str(f["default"]).replace("'", "''") + "'"
+    return repr(f["default"])
 
 
-def init_db():
-    with _db_lock, connect() as con:
-        for table, spec in ENTITIES.items():
-            cols = ",".join(f"{f[0]} {sql_type(f[1])} NOT NULL DEFAULT {sql_default(f)}"
-                            for f in spec["fields"])
-            con.execute(f"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, {cols},"
-                        " updated_at REAL NOT NULL DEFAULT 0)")
-        con.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        seeded = con.execute("SELECT 1 FROM settings WHERE key='seeded'").fetchone()
-        if not seeded:
-            for t in SEED_TOOLS:
-                insert(con, "tools", clean("tools", t))
-            for m in SEED_MATERIALS:
-                insert(con, "materials", clean("materials", dict(zip(MAT_KEYS, m))))
-            con.execute("INSERT INTO settings(key,value) VALUES('seeded','1')")
-        upgrade_seed(con)
-        con.commit()
+def create_tables(con):
+    for table, spec in ENTITIES.items():
+        cols = ",".join(f"{f['name']} {sql_type(f['kind'])} NOT NULL DEFAULT {sql_default(f)}" for f in spec["fields"])
+        con.execute(f"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, {cols},"
+                    " updated_at REAL NOT NULL DEFAULT 0)")
+        have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+        for f in spec["fields"]:
+            if f["name"] not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {f['name']} {sql_type(f['kind'])} NOT NULL DEFAULT {sql_default(f)}")
+    con.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+
+
+def set_setting(con, key, value):
+    con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)))
+
+
+def get_raw_setting(con, key, default=None):
+    r = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return r["value"] if r else default
+
+
+def touch(con):
+    """Bump the data revision so other open browsers know to refresh."""
+    set_setting(con, "rev", int(get_raw_setting(con, "rev", "0")) + 1)
+
+
+def material_key(name):
+    n = str(name).lower()
+    if "alumin" in n:
+        return "aluminum"
+    if "polycarb" in n or "lexan" in n:
+        return "polycarbonate"
+    if "mdf" in n or "spoil" in n:
+        return "spoilboard"
+    return None
+
+
+def migrate_v1(con):
+    """Version 1 kept materials in a table and recipes pointed at them. Convert in place."""
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(recipes)")}
+    if "material_id" not in cols:
+        return
+    names = {r["id"]: r["name"] for r in con.execute("SELECT id,name FROM materials")} if \
+        con.execute("SELECT 1 FROM sqlite_master WHERE name='materials'").fetchone() else {}
+    old = [dict(r) for r in con.execute("SELECT * FROM recipes ORDER BY id")]
+    con.execute("DROP TABLE recipes")
+    con.execute("DROP TABLE IF EXISTS materials")
+    create_tables(con)
+    for r in old:
+        mat = material_key(names.get(r.get("material_id"), ""))
+        seeded = str(r.get("notes", "")).startswith(("From omio-tools.tools", "Your run:"))
+        if not mat or seeded:  # unsupported material, or a v1 seed that is re-created below
+            continue
+        row = {f["name"]: r.get(f["name"], f["default"]) for f in ENTITIES["recipes"]["fields"]}
+        row["material"] = mat
+        if con.execute("SELECT 1 FROM tools WHERE id=?", (row["tool_id"],)).fetchone():
+            try:
+                insert(con, "recipes", clean("recipes", row))
+            except ValidationError:
+                pass
+
+
+def seed_defaults(con):
+    """Add the built-in tools/settings/tasks that are missing. Never overwrites anything the team edited."""
+    for t in SEED_TOOLS:
+        if not con.execute("SELECT 1 FROM tools WHERE name=?", (t["name"],)).fetchone():
+            insert(con, "tools", clean("tools", t))
+    for tname, mat, op, label, rpm, feed, plunge, ramp, doc, woc, notes in SEED_RECIPES:
+        tool = con.execute("SELECT id FROM tools WHERE name LIKE ? ORDER BY id LIMIT 1", (tname + "%",)).fetchone()
+        if not tool:
+            continue
+        have = con.execute("SELECT 1 FROM recipes WHERE tool_id=? AND material=? AND op=? AND (label=? OR label='')",
+                           (tool["id"], mat, op, label)).fetchone()
+        if not have:
+            insert(con, "recipes", clean("recipes", dict(tool_id=tool["id"], material=mat, op=op, label=label, rpm=rpm,
+                                                         feed_mm=feed, plunge_mm=plunge, ramp_mm=ramp, doc_mm=doc,
+                                                         woc_mm=woc, rating=4, notes=notes)))
 
 
 def upgrade_seed(con):
-    """Bring seeded materials and known-good settings up to date without overwriting the user's edits."""
-    row = con.execute("SELECT value FROM settings WHERE key='seed_version'").fetchone()
-    if row and int(row["value"]) >= SEED_VERSION:
-        return
-    cond = " AND ".join(f"{k}=?" for k in MAT_KEYS)
-    for old in MATERIAL_UPGRADES:
-        new = next(m for m in SEED_MATERIALS if m[0] == old[0])
-        sets = ",".join(f"{k}=?" for k in MAT_KEYS[1:])
-        for r in con.execute(f"SELECT id FROM materials WHERE {cond}", old).fetchall():
-            con.execute(f"UPDATE materials SET {sets},updated_at=? WHERE id=?", list(new[1:]) + [time.time(), r["id"]])
-    # Thrifty Bot endmills: 12 mm cutting length, diamond grit coating (only rows still at the old seed values).
-    con.execute("UPDATE tools SET flute_len_mm=12, coating='Diamond grit', updated_at=? WHERE name LIKE 'Thrifty Bot%'"
-                " AND flute_len_mm=20 AND overall_mm=50 AND coating=''", (time.time(),))
-    for m in SEED_MATERIALS:
-        if not con.execute("SELECT 1 FROM materials WHERE name=?", (m[0],)).fetchone():
-            insert(con, "materials", clean("materials", dict(zip(MAT_KEYS, m))))
-    for tool_prefix, mat_name, op, fields in KNOWN_GOOD:
-        tool = con.execute("SELECT id FROM tools WHERE name LIKE ? ORDER BY id LIMIT 1", (tool_prefix + "%",)).fetchone()
-        mat = con.execute("SELECT id FROM materials WHERE name=? ORDER BY id LIMIT 1", (mat_name,)).fetchone()
-        if tool and mat and not con.execute("SELECT 1 FROM recipes WHERE tool_id=? AND material_id=? AND op=?",
-                                            (tool["id"], mat["id"], op)).fetchone():
-            insert(con, "recipes", clean("recipes", dict(fields, tool_id=tool["id"], material_id=mat["id"], op=op)))
-    con.execute("INSERT INTO settings(key,value) VALUES('seed_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(SEED_VERSION),))
+    """One-time fixes to rows that older versions seeded, applied only if the team never edited them."""
+    now = time.time()
+    for old, new in (("Thrifty Bot 5 mm (undersized)", "Thrifty Bot 5 mm"), ("Thrifty Bot 4 mm (undersized)", "Thrifty Bot 4 mm")):
+        if not con.execute("SELECT 1 FROM tools WHERE name=?", (new,)).fetchone():
+            con.execute("UPDATE tools SET name=?, updated_at=? WHERE name=?", (new, now, old))
+    # Thrifty Bot's 4 mm endmill is carbide and 45 mm long; version 1 seeded it as HSS / 50 mm.
+    con.execute("UPDATE tools SET mat='carbide', overall_mm=45, updated_at=? WHERE name='Thrifty Bot 4 mm' AND mat='hss'"
+                " AND overall_mm=50", (now,))
 
 
-class ValidationError(ValueError):
-    pass
+def init_db(backup=True):
+    with _db_lock:
+        existed = db_path().exists()
+        if existed and backup and time.time() - newest_backup_time() > 3600:
+            backup_db("startup")
+        with connect() as con:
+            create_tables(con)
+            fresh = get_raw_setting(con, "schema") is None and con.execute("SELECT COUNT(*) c FROM tools").fetchone()["c"] == 0
+            migrate_v1(con)
+            if get_raw_setting(con, "rev") is None:
+                set_setting(con, "rev", 0)
+            if int(get_raw_setting(con, "seed_version", "0")) < SEED_VERSION:
+                upgrade_seed(con)
+                seed_defaults(con)
+                if fresh:
+                    for task, days, notes in SEED_MAINTENANCE:
+                        insert(con, "maintenance", clean("maintenance", dict(
+                            task=task, interval_days=days, notes=("Suggested: " + notes) if notes else "Suggested task.")))
+                set_setting(con, "seed_version", SEED_VERSION)
+            set_setting(con, "schema", SCHEMA_VERSION)
+            touch(con)
 
 
-def clean(table, data):
-    """Validate/normalise a payload against the table's field specs."""
-    if not isinstance(data, dict):
-        raise ValidationError("Expected an object")
-    out = {}
-    for name, kind, default, a, b in ENTITIES[table]["fields"]:
-        v = data.get(name, default)
-        if kind == "str":
-            v = str(v if v is not None else "").strip()
-            if not (a <= len(v) <= b):
-                raise ValidationError(f"{name}: length must be {a}-{b}")
-        elif kind == "enum":
-            if v not in a:
-                raise ValidationError(f"{name}: must be one of {', '.join(a)}")
-        else:
-            try:
-                v = int(v) if kind == "int" else float(v)
-            except (TypeError, ValueError):
-                raise ValidationError(f"{name}: must be a number")
-            if v != v or not (a <= v <= b):
-                raise ValidationError(f"{name}: must be between {a} and {b}")
-        out[name] = v
+# -- backups ---------------------------------------------------------------
+BACKUP_RE = re.compile(r"^shop-\d{8}-\d{6}(-\d+)?-[a-z0-9]{1,12}\.sqlite3$")
+
+
+def backup_dir():
+    return DATA_DIR / "backups"
+
+
+def backup_db(reason="auto"):
+    """Consistent snapshot of the live DB into DATA_DIR/backups; keeps the newest BACKUP_KEEP."""
+    src = db_path()
+    if not src.exists():
+        return None
+    d = backup_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    tag = re.sub(r"[^a-z0-9]", "", reason.lower())[:12] or "auto"
+    name, i = f"shop-{stamp}-{tag}.sqlite3", 1
+    while (d / name).exists():
+        name, i = f"shop-{stamp}-{i}-{tag}.sqlite3", i + 1
+    s = sqlite3.connect(src, timeout=10)
+    t = sqlite3.connect(d / name)
+    try:
+        s.backup(t)
+    finally:
+        t.close()
+        s.close()
+    _last_backup[0] = time.time()
+    files = sorted((f for f in d.iterdir() if BACKUP_RE.match(f.name)), key=lambda f: f.name)
+    for old in files[:-BACKUP_KEEP]:
+        with contextlib.suppress(OSError):
+            old.unlink()
+    return name
+
+
+def newest_backup_time():
+    d = backup_dir()
+    times = [f.stat().st_mtime for f in d.iterdir() if BACKUP_RE.match(f.name)] if d.is_dir() else []
+    return max(times, default=0.0)
+
+
+def maybe_auto_backup():
+    if time.time() - max(_last_backup[0], newest_backup_time()) > AUTO_BACKUP_SECONDS:
+        backup_db("auto")
+
+
+def list_backups():
+    d = backup_dir()
+    out = []
+    if d.is_dir():
+        for f in sorted(d.iterdir(), key=lambda f: f.name, reverse=True):
+            if BACKUP_RE.match(f.name):
+                st = f.stat()
+                out.append({"name": f.name, "size": st.st_size, "time": int(st.st_mtime)})
     return out
 
 
-def insert(con, table, row):
-    cols = list(row)
-    cur = con.execute(
-        f"INSERT INTO {table} ({','.join(cols)},updated_at) VALUES ({','.join('?' * len(cols))},?)",
-        [row[c] for c in cols] + [time.time()])
-    return cur.lastrowid
+def restore_backup(name):
+    if not isinstance(name, str) or not BACKUP_RE.match(name):
+        raise ValidationError("Bad backup name")
+    src = backup_dir() / name
+    if not src.is_file():
+        raise ValidationError("Backup not found")
+    probe = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        tables = {r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"tools", "recipes", "settings"} <= tables or probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise ValidationError("That file is not a usable backup")
+    except sqlite3.DatabaseError:
+        raise ValidationError("That file is not a usable backup")
+    finally:
+        probe.close()
+    with _db_lock:
+        backup_db("prerestore")
+        s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        t = sqlite3.connect(db_path(), timeout=10)
+        try:
+            s.backup(t)
+        finally:
+            t.close()
+            s.close()
+        init_db(backup=False)
 
 
-def rows(con, table):
-    return [dict(r) for r in con.execute(f"SELECT * FROM {table} ORDER BY id")]
+# -- validation --------------------------------------------------------------
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def get_settings(con):
-    s = dict(SETTINGS_DEFAULTS)
-    for r in con.execute("SELECT key,value FROM settings WHERE key NOT IN ('seeded','seed_version')"):
-        if r["key"] in s:
-            s[r["key"]] = r["value"] if r["key"] == "units" else float(r["value"])
-    return s
+def coerce(f, v):
+    name, kind = f["name"], f["kind"]
+    if kind == "str":
+        v = "" if v is None else v
+        if not isinstance(v, (str, int, float)) or isinstance(v, bool):
+            raise ValidationError(f"{name}: must be text")
+        v = _CTRL.sub("", str(v)).strip()
+        if not (f["lo"] <= len(v) <= f["hi"]):
+            raise ValidationError(f"{name}: length must be {f['lo']}-{f['hi']}")
+        return v
+    if kind == "enum":
+        if v not in f["options"]:
+            raise ValidationError(f"{name}: must be one of {', '.join(f['options'])}")
+        return v
+    if kind == "date":
+        if v in (None, ""):
+            return ""
+        text = str(v)
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                raise ValueError
+            datetime.date.fromisoformat(text)
+        except ValueError:
+            raise ValidationError(f"{name}: must be a date like 2026-01-31")
+        return text
+    if isinstance(v, bool) or v is None or v == "":
+        raise ValidationError(f"{name}: must be a number")
+    try:
+        x = int(v) if kind in ("int", "ref") else float(v)
+        if kind in ("int", "ref") and isinstance(v, float) and v != int(v):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ValidationError(f"{name}: must be a {'whole ' if kind in ('int', 'ref') else ''}number")
+    if kind == "ref":
+        if x < (0 if f["optional"] else 1):
+            raise ValidationError(f"{name}: pick one")
+        return x
+    if not math.isfinite(x) or not (f["lo"] <= x <= f["hi"]):
+        raise ValidationError(f"{name}: must be between {f['lo']:g} and {f['hi']:g}")
+    return x
 
 
-def clean_settings(data):
+def clean(table, data, base=None):
+    """Validate/normalise a payload against the table's field specs. `base` supplies values for omitted fields (PUT)."""
     if not isinstance(data, dict):
         raise ValidationError("Expected an object")
+    fields = ENTITIES[table]["fields"]
+    extra = set(data) - {f["name"] for f in fields} - IGNORED_KEYS
+    if extra:
+        raise ValidationError("Unknown field: " + ", ".join(sorted(map(str, extra))[:3]))
+    out = {}
+    for f in fields:
+        n = f["name"]
+        out[n] = coerce(f, data[n] if n in data else (base[n] if base and n in base else f["default"]))
+    if table == "tools":
+        if not 0.5 * out["nominal_mm"] <= out["actual_mm"] <= 1.5 * out["nominal_mm"]:
+            raise ValidationError("actual_mm: should be within 50-150% of the nominal size")
+        if out["overall_mm"] and out["flute_len_mm"] > out["overall_mm"]:
+            raise ValidationError("flute_len_mm: can't be longer than the overall length")
+    if table in ("joblog",) and not out["date"]:
+        out["date"] = datetime.date.today().isoformat()
+    return out
+
+
+def clean_settings(data, base=None):
+    if not isinstance(data, dict):
+        raise ValidationError("Expected an object")
+    extra = set(data) - set(SETTINGS_DEFAULTS)
+    if extra:
+        raise ValidationError("Unknown setting: " + ", ".join(sorted(map(str, extra))[:3]))
     out = {}
     for k, default in SETTINGS_DEFAULTS.items():
-        v = data.get(k, default)
+        v = data.get(k, (base or {}).get(k, default))
         if k == "units":
             if v not in ("mm", "in"):
                 raise ValidationError("units: must be mm or in")
         else:
+            if isinstance(v, bool):
+                raise ValidationError(f"{k}: must be a number")
             try:
                 v = float(v)
             except (TypeError, ValueError):
                 raise ValidationError(f"{k}: must be a number")
             lo, hi = SETTINGS_LIMITS[k]
-            if not (lo <= v <= hi):
+            if not math.isfinite(v) or not (lo <= v <= hi):
                 raise ValidationError(f"{k}: must be between {lo} and {hi}")
         out[k] = v
     if out["min_rpm"] >= out["max_rpm"]:
@@ -318,62 +489,139 @@ def clean_settings(data):
     return out
 
 
+def insert(con, table, row, rid=None):
+    cols = list(row) + (["id"] if rid else [])
+    vals = list(row.values()) + ([rid] if rid else [])
+    cur = con.execute(f"INSERT INTO {table} ({','.join(cols)},updated_at) VALUES ({','.join('?' * len(cols))},?)",
+                      vals + [time.time()])
+    return cur.lastrowid
+
+
+def rows(con, table, limit=None, offset=0):
+    sql = f"SELECT * FROM {table} ORDER BY id"
+    if limit is not None:
+        return [dict(r) for r in con.execute(sql + " LIMIT ? OFFSET ?", (limit, offset))]
+    return [dict(r) for r in con.execute(sql)]
+
+
+def get_settings(con):
+    s = dict(SETTINGS_DEFAULTS)
+    for r in con.execute("SELECT key,value FROM settings"):
+        if r["key"] in s:
+            try:
+                s[r["key"]] = r["value"] if r["key"] == "units" else float(r["value"])
+            except ValueError:
+                pass
+    return s
+
+
+def snapshot(con, tables=None):
+    data = {t: rows(con, t) for t in (tables or ENTITIES)}
+    data["settings"] = get_settings(con)
+    return data
+
+
+def check_refs(con, table, row):
+    if table == "recipes" and not con.execute("SELECT 1 FROM tools WHERE id=?", (row["tool_id"],)).fetchone():
+        raise ValidationError("tool_id: unknown tool")
+    if table == "joblog" and row["tool_id"] and not con.execute("SELECT 1 FROM tools WHERE id=?", (row["tool_id"],)).fetchone():
+        raise ValidationError("tool_id: unknown tool")
+
+
+def check_cap(con, table, adding=1):
+    n = con.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+    if n + adding > ENTITIES[table]["cap"]:
+        raise ValidationError(f"{table} is full (max {ENTITIES[table]['cap']}). Delete old entries first.")
+
+
+def import_all(con, data):
+    """Replace everything with a backup file's contents (all-or-nothing). Understands version-1 exports too."""
+    if not isinstance(data, dict):
+        raise ValidationError("Expected a backup object")
+    names = {}
+    if isinstance(data.get("materials"), list):
+        names = {m.get("id"): m.get("name", "") for m in data["materials"] if isinstance(m, dict)}
+    parsed = {}
+    for table, spec in ENTITIES.items():
+        raw = data.get(table, [])
+        if not isinstance(raw, list):
+            raise ValidationError(f"{table}: expected a list")
+        if len(raw) > spec["cap"]:
+            raise ValidationError(f"{table}: too many rows (max {spec['cap']})")
+        out, seen = [], set()
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValidationError(f"{table}: expected objects")
+            item = dict(item)
+            if table == "recipes" and "material_id" in item:
+                mat = material_key(names.get(item.pop("material_id"), ""))
+                if not mat:
+                    continue
+                item["material"] = mat
+            rid = item.get("id")
+            if (rid is None and table == "tools") or (rid is not None and (
+                    not isinstance(rid, int) or isinstance(rid, bool) or rid < 1 or rid in seen)):
+                raise ValidationError(f"{table}: bad, missing or duplicate id")
+            seen.add(rid)
+            out.append((rid, clean(table, item)))
+        parsed[table] = out
+    tool_ids = {rid for rid, _ in parsed["tools"] if rid}
+    for table in ("recipes", "joblog"):
+        for _, row in parsed[table]:
+            if row["tool_id"] and row["tool_id"] not in tool_ids:
+                raise ValidationError(f"{table}: refers to a tool that is not in the file")
+    settings = clean_settings(data["settings"]) if isinstance(data.get("settings"), dict) else None
+    backup_db("preimport")
+    for table in ENTITIES:
+        con.execute(f"DELETE FROM {table}")
+        con.execute("DELETE FROM sqlite_sequence WHERE name=?", (table,))
+    for table in ENTITIES:  # tools first so references resolve
+        for rid, row in parsed[table]:
+            insert(con, table, row, rid)
+    if settings:
+        for k, v in settings.items():
+            set_setting(con, k, v)
+    touch(con)
+
+
 # --------------------------------------------------------------------------
-# Auth: signed cookie after logging in with ADMIN_PASSWORD
+# Rate limit (per IP, writes only)
 # --------------------------------------------------------------------------
-def _key():
-    f = DATA_DIR / "session.key"
-    if not f.exists():
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        f.write_text(secrets.token_hex(32))
-        os.chmod(f, 0o600)
-    return hashlib.sha256((f.read_text() + "|" + ADMIN_PASSWORD).encode()).digest()
+_rate = {}
+_rate_lock = threading.Lock()
 
 
-def make_token():
-    exp = str(int(time.time()) + SESSION_SECONDS)
-    return exp + "." + hmac.new(_key(), exp.encode(), "sha256").hexdigest()
-
-
-def valid_token(token):
-    if not ADMIN_PASSWORD or not token or "." not in token:
-        return False
-    exp, sig = token.split(".", 1)
-    if not exp.isdigit() or int(exp) < time.time():
-        return False
-    return hmac.compare_digest(sig, hmac.new(_key(), exp.encode(), "sha256").hexdigest())
-
-
-_fail = {}
-_fail_lock = threading.Lock()
-
-
-def throttled(ip):
-    with _fail_lock:
-        n, until = _fail.get(ip, (0, 0))
-        return until > time.time()
-
-
-def record_login(ip, ok):
-    with _fail_lock:
-        if ok:
-            _fail.pop(ip, None)
-            return
-        if len(_fail) > 1000:
-            _fail.clear()
-        n, _ = _fail.get(ip, (0, 0))
-        n += 1
-        _fail[ip] = (n, time.time() + min(2 ** n, 300) if n >= 5 else 0)
+def allow_write(ip):
+    now = time.time()
+    with _rate_lock:
+        if len(_rate) > 5000:
+            _rate.clear()
+        tokens, last = _rate.get(ip, (RATE_CAP, now))
+        tokens = min(RATE_CAP, tokens + (now - last) * RATE_REFILL)
+        if tokens < 1:
+            _rate[ip] = (tokens, now)
+            return False
+        _rate[ip] = (tokens - 1, now)
+        return True
 
 
 # --------------------------------------------------------------------------
+# HTTP
+# --------------------------------------------------------------------------
+_static_cache = {}
+
+
+def _no_constants(c):
+    raise ValueError("bad JSON constant " + c)
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "CNCCalc"
+    server_version = "ShopToolkit"
     protocol_version = "HTTP/1.1"
     timeout = 15  # seconds; drops stalled/slow clients
 
     def log_message(self, fmt, *args):
-        if "timed out" in fmt:  # idle keep-alive connections closing; not interesting
+        if "timed out" in fmt:
             return
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
 
@@ -381,44 +629,44 @@ class Handler(BaseHTTPRequestHandler):
     def ip(self):
         return self.headers.get("X-Real-IP") or self.client_address[0]
 
-    def send(self, code, body=b"", ctype="application/json", extra=None):
+    def https(self):
+        return self.headers.get("X-Forwarded-Proto") == "https"
+
+    def send(self, code, body=b"", ctype="application/json", extra=None, gz=None):
         if isinstance(body, (dict, list)):
-            body = json.dumps(body).encode()
+            body = json.dumps(body, separators=(",", ":")).encode()
         elif isinstance(body, str):
             body = body.encode()
+        headers = dict(extra or {})
+        if "gzip" in self.headers.get("Accept-Encoding", "") and len(body) > 1024:
+            body = gz if gz is not None else gzip.compress(body, 6, mtime=0)
+            headers["Content-Encoding"] = "gzip"
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Vary", "Accept-Encoding")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                         "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+                         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                         "connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        if self.https():
+            self.send_header("Strict-Transport-Security", "max-age=15552000")
         self.send_header("Cache-Control", "no-store" if ctype.startswith("application/json") else "no-cache")
         if self.close_connection:
             self.send_header("Connection", "close")
-        for k, v in (extra or {}).items():
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def err(self, code, msg):
-        self.send(code, {"error": msg})
-
-    def cookie(self):
-        for part in self.headers.get("Cookie", "").split(";"):
-            k, _, v = part.strip().partition("=")
-            if k == COOKIE:
-                return v
-        return ""
-
-    def is_admin(self):
-        return valid_token(self.cookie())
-
-    def secure_flag(self):
-        return "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+    def err(self, code, msg, extra=None):
+        self.send(code, {"error": msg}, extra=extra)
 
     def guard(self, fn):
         """Run a handler; never let an exception kill the connection silently."""
@@ -435,7 +683,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    def read_body(self):
+    def drain(self, n):
+        """Discard up to n bytes of an unwanted body so the error reply isn't lost to a connection reset."""
+        try:
+            while n > 0:
+                chunk = self.rfile.read(min(n, 65536))
+                if not chunk:
+                    break
+                n -= len(chunk)
+        except (OSError, TimeoutError):
+            pass
+
+    def read_body(self, limit=MAX_BODY):
         """Read the request body up front so error replies never leave unread bytes on a keep-alive connection."""
         self._raw = b""
         if self.headers.get("Transfer-Encoding"):
@@ -448,8 +707,9 @@ class Handler(BaseHTTPRequestHandler):
         if n < 0:
             self.close_connection = True
             return self.err(400, "Bad Content-Length")
-        if n > MAX_BODY:
+        if n > limit:
             self.close_connection = True
+            self.drain(min(n, 2 * 1024 * 1024))
             return self.err(413, "Request too large")
         self._raw = self.rfile.read(n) if n else b""
         return None
@@ -458,16 +718,25 @@ class Handler(BaseHTTPRequestHandler):
         if "application/json" not in self.headers.get("Content-Type", ""):
             raise ValidationError("Content-Type must be application/json")
         try:
-            return json.loads(self._raw or b"null")
-        except ValueError:
+            return json.loads(self._raw or b"null", parse_constant=_no_constants)
+        except (ValueError, RecursionError):
             raise ValidationError("Invalid JSON")
 
+    def host_ok(self):
+        if not ALLOWED_HOSTS:
+            return True
+        host = (self.headers.get("Host") or "").lower()
+        return host in ALLOWED_HOSTS or host.split(":")[0] in ALLOWED_HOSTS
+
     def same_origin(self):
+        if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+            return False
         origin = self.headers.get("Origin")
         if not origin:
             return True
-        host = urlparse(origin).netloc
-        return host in (self.headers.get("Host"), self.headers.get("X-Forwarded-Host"))
+        host = urlsplit(origin).netloc.lower()
+        allowed = {(self.headers.get("Host") or "").lower(), (self.headers.get("X-Forwarded-Host") or "").lower()} - {""}
+        return bool(host) and host in allowed
 
     # -- routing --
     def do_HEAD(self):
@@ -476,39 +745,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.guard(self.get)
 
-    def get(self):
-        if self.headers.get("Content-Length", "0") not in ("", "0") or self.headers.get("Transfer-Encoding"):
-            self.close_connection = True
-        path = urlparse(self.path).path
-        if path == "/api/health":
-            return self.send(200, {"ok": True})
-        if path == "/api/state":
-            with _db_lock, connect() as con:
-                state = {t: rows(con, t) for t in ENTITIES}
-                state["settings"] = get_settings(con)
-            state["admin"] = self.is_admin()
-            state["admin_configured"] = bool(ADMIN_PASSWORD)
-            return self.send(200, state)
-        if path == "/api/export":
-            if not self.is_admin():
-                return self.err(401, "Admin login required")
-            with _db_lock, connect() as con:
-                data = {t: rows(con, t) for t in ENTITIES}
-                data["settings"] = get_settings(con)
-            return self.send(200, data, extra={"Content-Disposition": 'attachment; filename="cnc-data.json"'})
-        if path.startswith("/api/"):
-            return self.err(404, "Not found")
-        self.static(path)
-
-    def static(self, path):
-        rel = "index.html" if path in ("/", "") else path.lstrip("/")
-        f = (STATIC / rel).resolve()
-        if STATIC.resolve() not in f.parents or not f.is_file():
-            return self.err(404, "Not found")
-        ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
-            ctype += "; charset=utf-8"
-        self.send(200, f.read_bytes(), ctype)
+    def do_OPTIONS(self):
+        self.guard(lambda: self.send(204, b"", extra={"Allow": "GET, HEAD, POST, PUT, DELETE"}))
 
     def do_POST(self):
         self.guard(lambda: self.mutate("POST"))
@@ -519,89 +757,159 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.guard(lambda: self.mutate("DELETE"))
 
+    def do_PATCH(self):
+        self.guard(lambda: self.mutate("PATCH"))
+
+    def get(self):
+        if self.headers.get("Content-Length", "0") not in ("", "0") or self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+        if not self.host_ok():
+            return self.err(400, "Unknown host")
+        url = urlsplit(self.path)
+        path = url.path
+        if path == "/api/health":
+            return self.send(200, {"ok": True, "version": APP_VERSION})
+        if path == "/api/rev":
+            with _db_lock, connect() as con:
+                return self.send(200, {"rev": int(get_raw_setting(con, "rev", "0"))})
+        if path == "/api/state":
+            with _db_lock, connect() as con:
+                state = snapshot(con, [t for t in ENTITIES if t != "joblog"])
+                state["joblog_count"] = con.execute("SELECT COUNT(*) c FROM joblog").fetchone()["c"]
+                state["rev"] = int(get_raw_setting(con, "rev", "0"))
+            state["version"] = APP_VERSION
+            return self.send(200, state)
+        if path == "/api/export":
+            with _db_lock, connect() as con:
+                data = snapshot(con)
+            data.update(app="shop-toolkit", version=APP_VERSION, exported=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+            return self.send(200, data, extra={"Content-Disposition": 'attachment; filename="shop-data.json"'})
+        if path == "/api/backups":
+            return self.send(200, {"backups": list_backups()})
+        m = re.fullmatch(r"/api/(\w+)", path)
+        if m and m.group(1) in ENTITIES:
+            q = parse_qs(url.query)
+            try:
+                limit = min(int(q.get("limit", ["5000"])[0]), 5000)
+                offset = max(int(q.get("offset", ["0"])[0]), 0)
+            except ValueError:
+                return self.err(400, "Bad limit/offset")
+            with _db_lock, connect() as con:
+                return self.send(200, rows(con, m.group(1), max(limit, 0), offset))
+        if path.startswith("/api/"):
+            return self.err(404, "Not found")
+        self.static(path)
+
+    def static(self, path):
+        path = unquote(path)
+        if "\x00" in path or "\\" in path:
+            return self.err(404, "Not found")
+        rel = "index.html" if path in ("/", "") else path.lstrip("/")
+        f = (STATIC / rel).resolve()
+        if STATIC.resolve() not in f.parents or not f.is_file():
+            return self.err(404, "Not found")
+        st = f.stat()
+        etag = '"%x-%x"' % (st.st_mtime_ns, st.st_size)
+        if self.headers.get("If-None-Match") == etag:
+            return self.send(304, b"", extra={"ETag": etag})
+        hit = _static_cache.get(f)
+        if not hit or hit[0] != etag:
+            raw = f.read_bytes()
+            hit = _static_cache[f] = (etag, raw, gzip.compress(raw, 9, mtime=0) if len(raw) > 1024 else None)
+        ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml", "application/json"):
+            ctype += "; charset=utf-8"
+        self.send(200, hit[1], ctype, extra={"ETag": etag}, gz=hit[2])
+
     def mutate(self, method):
-        if self.read_body() is not None or self.close_connection:
+        path_only = urlsplit(self.path).path
+        if self.read_body(MAX_IMPORT if path_only == "/api/import" else MAX_BODY) is not None or self.close_connection:
             return
+        if not self.host_ok():
+            return self.err(400, "Unknown host")
         if not self.same_origin():
             return self.err(403, "Cross-origin request blocked")
-        path = urlparse(self.path).path.strip("/").split("/")
+        if not allow_write(self.ip()):
+            return self.err(429, "Too many changes too quickly. Wait a few seconds.", extra={"Retry-After": "5"})
+        path = path_only.strip("/").split("/")
         try:
-            if path == ["api", "login"] and method == "POST":
-                return self.login()
-            if path == ["api", "logout"] and method == "POST":
-                return self.send(200, {"ok": True},
-                                 extra={"Set-Cookie": f"{COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{self.secure_flag()}"})
             if path[:1] != ["api"] or len(path) < 2:
                 return self.err(404, "Not found")
-            if not self.is_admin():
-                return self.err(401, "Admin login required")
-            if path[1] == "settings" and method == "PUT" and len(path) == 2:
-                data = clean_settings(self.json_body())
-                with _db_lock, connect() as con:
-                    for k, v in data.items():
-                        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                                    (k, str(v)))
-                return self.send(200, data)
-            table = path[1]
-            if table not in ENTITIES:
-                return self.err(404, "Not found")
-            code, obj = self.entity(method, table, path[2:])
+            code, obj = self.api_write(method, path[1], path[2:])
+            maybe_auto_backup()
             return self.send(code, obj)
         except ValidationError as e:
             return self.err(400, str(e))
         except sqlite3.IntegrityError as e:
             return self.err(409, str(e))
 
-    def login(self):
-        ip = self.ip()
-        if not ADMIN_PASSWORD:
-            return self.err(403, "ADMIN_PASSWORD is not set on the server")
-        if throttled(ip):
-            return self.err(429, "Too many attempts; wait a bit")
-        data = self.json_body()
-        pw = str(data.get("password", "")) if isinstance(data, dict) else ""
-        ok = hmac.compare_digest(hashlib.sha256(pw.encode()).digest(), hashlib.sha256(ADMIN_PASSWORD.encode()).digest())
-        record_login(ip, ok)
-        if not ok:
-            time.sleep(0.5)
-            return self.err(401, "Wrong password")
-        cookie = f"{COOKIE}={make_token()}; Path=/; Max-Age={SESSION_SECONDS}; HttpOnly; SameSite=Strict{self.secure_flag()}"
-        return self.send(200, {"ok": True}, extra={"Set-Cookie": cookie})
+    def api_write(self, method, head, rest):
+        if head == "settings" and method == "PUT" and not rest:
+            body = self.json_body()
+            with _db_lock, connect() as con:
+                data = clean_settings(body, get_settings(con))
+                for k, v in data.items():
+                    set_setting(con, k, v)
+                touch(con)
+            return 200, data
+        if head == "import" and method == "POST" and not rest:
+            body = self.json_body()
+            with _db_lock, connect() as con:
+                import_all(con, body)
+            return 200, {"ok": True}
+        if head == "restore-defaults" and method == "POST" and not rest:
+            with _db_lock, connect() as con:
+                seed_defaults(con)
+                touch(con)
+            return 200, {"ok": True}
+        if head == "backups" and method == "POST" and rest == ["restore"]:
+            body = self.json_body()
+            restore_backup(body.get("name") if isinstance(body, dict) else None)
+            return 200, {"ok": True}
+        if head == "backups" and method == "POST" and not rest:
+            with _db_lock:
+                return 201, {"name": backup_db("manual")}
+        if head in ENTITIES:
+            return self.entity(method, head, rest)
+        return 404, {"error": "Not found"}
 
     def entity(self, method, table, rest):
         """Returns (status, payload). The DB lock is released before anything is written to the socket."""
         with _db_lock, connect() as con:
             if method == "POST" and not rest:
                 data = self.json_body()
-                if isinstance(data, list):  # bulk import (all-or-nothing)
-                    if len(data) > 500:
-                        raise ValidationError("Too many rows (max 500)")
-                    return 201, {"ids": [insert(con, table, self.check(con, table, d)) for d in data]}
-                return 201, {"id": insert(con, table, self.check(con, table, data))}
-            if len(rest) == 1 and rest[0].isdigit():
+                items = data if isinstance(data, list) else [data]
+                if len(items) > 500:
+                    raise ValidationError("Too many rows (max 500)")
+                check_cap(con, table, len(items))
+                ids = []
+                for item in items:
+                    row = clean(table, item)
+                    check_refs(con, table, row)
+                    ids.append(insert(con, table, row))
+                touch(con)
+                return 201, ({"ids": ids} if isinstance(data, list) else {"id": ids[0]})
+            if len(rest) == 1 and rest[0].isdigit() and len(rest[0]) < 12:
                 rid = int(rest[0])
-                if not con.execute(f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
+                cur = con.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
+                if not cur:
                     return 404, {"error": "Not found"}
-                if method == "PUT":
-                    row = self.check(con, table, self.json_body())
+                if method in ("PUT", "PATCH"):
+                    row = clean(table, self.json_body(), dict(cur))
+                    check_refs(con, table, row)
                     sets = ",".join(f"{c}=?" for c in row)
                     con.execute(f"UPDATE {table} SET {sets},updated_at=? WHERE id=?", list(row.values()) + [time.time(), rid])
+                    touch(con)
                     return 200, {"id": rid}
                 if method == "DELETE":
-                    if table in ("tools", "materials"):  # remove dependent saved settings
-                        col = "tool_id" if table == "tools" else "material_id"
-                        con.execute(f"DELETE FROM recipes WHERE {col}=?", (rid,))
+                    removed = 0
+                    if table == "tools":  # saved settings for a deleted tool make no sense; old log entries just forget it
+                        removed = con.execute("DELETE FROM recipes WHERE tool_id=?", (rid,)).rowcount
+                        con.execute("UPDATE joblog SET tool_id=0 WHERE tool_id=?", (rid,))
                     con.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
-                    return 200, {"ok": True}
+                    touch(con)
+                    return 200, {"ok": True, "removed_recipes": removed}
         return 405, {"error": "Method not allowed"}
-
-    def check(self, con, table, data):
-        row = clean(table, data)
-        if table == "recipes":
-            for col, ref in (("tool_id", "tools"), ("material_id", "materials")):
-                if not con.execute(f"SELECT 1 FROM {ref} WHERE id=?", (row[col],)).fetchone():
-                    raise ValidationError(f"{col}: unknown id")
-        return row
 
 
 def make_server(host, port):
@@ -614,7 +922,7 @@ def main():
     port = int(os.environ.get("PORT", "8080"))
     srv = make_server(host, port)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=srv.shutdown).start())
-    print(f"Listening on {host}:{port}, data in {DATA_DIR}", flush=True)
+    print(f"Shop Toolkit listening on {host}:{port}, data in {DATA_DIR}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

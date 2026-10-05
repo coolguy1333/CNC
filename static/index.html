@@ -3,23 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CNC Feeds &amp; Speeds</title>
-<link rel="icon" href="data:,">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Feeds and speeds, CNC planning, shop calculators and FRC engineering tools for a robotics team shop.">
+<title>Shop Toolkit</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>CNC <span>Feeds &amp; Speeds</span></h1>
-  <nav id="tabs"></nav>
-  <div class="hr">
-    <div class="seg" id="unitSeg"><button data-u="mm">mm</button><button data-u="in">inch</button></div>
-    <button id="authBtn">Admin login</button>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <button id="menuBtn" class="iconbtn" aria-label="Menu" aria-expanded="false" aria-controls="nav"><span></span><span></span><span></span></button>
+  <a class="brand" href="#/cnc">Shop Toolkit</a>
+  <div class="search">
+    <input id="search" type="search" placeholder="Find a tool…  ( / )" aria-label="Find a tool" autocomplete="off">
+    <div id="searchOut" hidden></div>
   </div>
+  <div class="seg" id="unitSeg" role="group" aria-label="Units"><button type="button" data-u="imp">in · lb</button><button type="button" data-u="met">mm · kg</button></div>
 </header>
-<main id="view"></main>
+<div id="scrim"></div>
+<div class="layout">
+  <nav id="nav" aria-label="Tools and guides"></nav>
+  <main id="main" tabindex="-1"><section class="card"><p class="mut">Loading…</p></section></main>
+</div>
 <dialog id="dlg"><form method="dialog" id="dlgForm"></form></dialog>
-<div id="toast" role="status"></div>
-<script src="calc.js"></script>
+<div id="toast" role="status" aria-live="polite"></div>
+<noscript><p class="pad">This tool needs JavaScript.</p></noscript>
+<script src="js/cnc.js"></script>
+<script src="js/shop.js"></script>
+<script src="js/frc.js"></script>
+<script src="js/core.js"></script>
+<script src="js/page_cnc.js"></script>
+<script src="js/page_shop.js"></script>
+<script src="js/page_frc.js"></script>
+<script src="js/page_data.js"></script>
+<script src="js/page_guides.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
