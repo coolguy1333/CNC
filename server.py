@@ -102,10 +102,10 @@ SETTINGS_LIMITS = {
 
 SEED_TOOLS = [
     dict(name="Thrifty Bot 5 mm (undersized)", vendor="Thrifty Bot", kind="flat", nominal_mm=5.0, actual_mm=4.6,
-         flutes=1, flute_len_mm=20, overall_mm=50, shank_mm=5.0, mat="carbide",
+         flutes=1, flute_len_mm=12, overall_mm=50, shank_mm=5.0, mat="carbide", coating="Diamond grit",
          notes="Measured/real cutting diameter is 4.6 mm. Use 4.6 mm in CAM."),
     dict(name="Thrifty Bot 4 mm (undersized)", vendor="Thrifty Bot", kind="flat", nominal_mm=4.0, actual_mm=3.7,
-         flutes=1, flute_len_mm=20, overall_mm=50, shank_mm=4.0, mat="hss",
+         flutes=1, flute_len_mm=12, overall_mm=50, shank_mm=4.0, mat="hss", coating="Diamond grit",
          notes="Real cutting diameter 3.7 mm. Listed as HSS in the original library; change to carbide if it is."),
     dict(name='1/8" endmill', vendor="", kind="flat", nominal_mm=3.175, actual_mm=2.845,
          flutes=1, flute_len_mm=20, overall_mm=50, shank_mm=3.175, mat="hss"),
@@ -132,7 +132,7 @@ SEED_MATERIALS = [
 ]
 
 MAT_KEYS = ["name", "heat", "sfm_carbide", "sfm_hss", "fz_ratio", "doc_slot", "doc_side", "woc", "plunge", "kc"]
-SEED_VERSION = 4
+SEED_VERSION = 5
 # Earlier seed rows -> current ones. Applied only to rows the user never edited.
 MATERIAL_UPGRADES = [
     ("Aluminum 6061", "metal", 800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700),
@@ -230,6 +230,9 @@ def upgrade_seed(con):
         sets = ",".join(f"{k}=?" for k in MAT_KEYS[1:])
         for r in con.execute(f"SELECT id FROM materials WHERE {cond}", old).fetchall():
             con.execute(f"UPDATE materials SET {sets},updated_at=? WHERE id=?", list(new[1:]) + [time.time(), r["id"]])
+    # Thrifty Bot endmills: 12 mm cutting length, diamond grit coating (only rows still at the old seed values).
+    con.execute("UPDATE tools SET flute_len_mm=12, coating='Diamond grit', updated_at=? WHERE name LIKE 'Thrifty Bot%'"
+                " AND flute_len_mm=20 AND overall_mm=50 AND coating=''", (time.time(),))
     for m in SEED_MATERIALS:
         if not con.execute("SELECT 1 FROM materials WHERE name=?", (m[0],)).fetchone():
             insert(con, "materials", clean("materials", dict(zip(MAT_KEYS, m))))
