@@ -121,7 +121,7 @@ SEED_MATERIALS = [
     ("Aluminum 6061",        "metal",   1100, 250, 0.019, 0.34, 1.0, 0.15, 0.30, 700),
     ("Brass / Bronze",       "metal",   400, 150, 0.010, 0.20, 0.6, 0.10, 0.30, 1200),
     ("Acrylic (cast)",       "plastic", 1000, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 300),
-    ("Polycarbonate",        "plastic", 900, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 250),
+    ("Polycarbonate",        "plastic", 1100, 400, 0.030, 0.50, 1.0, 0.30, 0.40, 250),
     ("HDPE / UHMW",          "plastic", 1200, 500, 0.030, 0.60, 1.5, 0.40, 0.50, 150),
     ("Delrin / Acetal",      "plastic", 1000, 400, 0.025, 0.50, 1.2, 0.30, 0.40, 250),
     ("Hardwood",             "wood",    1000, 600, 0.020, 0.60, 1.5, 0.40, 0.50, 60),
@@ -130,10 +130,22 @@ SEED_MATERIALS = [
     ("Foam (XPS / EVA)",     "wood",    1500, 800, 0.050, 2.00, 3.0, 0.80, 0.60, 5),
 ]
 
-# Seed v1 aluminum row; replaced on upgrade only if the user never edited it.
-V1_ALUMINUM = ("Aluminum 6061", "metal", 800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700)
 MAT_KEYS = ["name", "heat", "sfm_carbide", "sfm_hss", "fz_ratio", "doc_slot", "doc_side", "woc", "plunge", "kc"]
-SEED_VERSION = 2
+SEED_VERSION = 3
+# Earlier seed rows -> current ones. Applied only to rows the user never edited.
+MATERIAL_UPGRADES = [
+    ("Aluminum 6061", "metal", 800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700),
+    ("Polycarbonate", "plastic", 900, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 250),
+]
+# Settings the user reported working: (tool name prefix, material, op, fields)
+KNOWN_GOOD = [
+    ("Thrifty Bot 5 mm", "Aluminum 6061", "slot", dict(
+        rpm=24000, feed_mm=1727.2, plunge_mm=508, doc_mm=1.5875, woc_mm=4.6, rating=3,
+        notes='Your run: 24,000 rpm, 68 in/min, 0.0625" depth, full slot (0.0028"/tooth).')),
+    ("Thrifty Bot 5 mm", "Polycarbonate", "profile", dict(
+        rpm=24000, feed_mm=3937, plunge_mm=0, doc_mm=3.175, woc_mm=0, rating=3,
+        notes='Your run: 24,000 rpm, 155 in/min, 1/8" depth (0.0065"/tooth). Near the X8 max feed.')),
+]
 
 _db_lock = threading.Lock()
 
@@ -185,23 +197,22 @@ def init_db():
 
 
 def upgrade_seed(con):
-    """v2: aluminum defaults matched to a proven 4.6 mm slotting run (research + user's 68 ipm / 0.0625 in cut)."""
+    """Bring seeded materials and known-good settings up to date without overwriting the user's edits."""
     row = con.execute("SELECT value FROM settings WHERE key='seed_version'").fetchone()
     if row and int(row["value"]) >= SEED_VERSION:
         return
-    new = next(m for m in SEED_MATERIALS if m[0] == "Aluminum 6061")
     cond = " AND ".join(f"{k}=?" for k in MAT_KEYS)
-    for r in con.execute(f"SELECT id FROM materials WHERE {cond}", V1_ALUMINUM).fetchall():
+    for old in MATERIAL_UPGRADES:
+        new = next(m for m in SEED_MATERIALS if m[0] == old[0])
         sets = ",".join(f"{k}=?" for k in MAT_KEYS[1:])
-        con.execute(f"UPDATE materials SET {sets},updated_at=? WHERE id=?", list(new[1:]) + [time.time(), r["id"]])
-    tool = con.execute("SELECT id FROM tools WHERE name LIKE 'Thrifty Bot 5 mm%' ORDER BY id LIMIT 1").fetchone()
-    mat = con.execute("SELECT id FROM materials WHERE name='Aluminum 6061' ORDER BY id LIMIT 1").fetchone()
-    if tool and mat and not con.execute("SELECT 1 FROM recipes WHERE tool_id=? AND material_id=? AND op='slot'",
-                                        (tool["id"], mat["id"])).fetchone():
-        insert(con, "recipes", clean("recipes", dict(
-            tool_id=tool["id"], material_id=mat["id"], op="slot", rpm=24000, feed_mm=1727.2, plunge_mm=508,
-            doc_mm=1.5875, woc_mm=4.6, rating=3,
-            notes='Your run: 24,000 rpm, 68 in/min, 0.0625" depth, full slot (0.0028"/tooth).')))
+        for r in con.execute(f"SELECT id FROM materials WHERE {cond}", old).fetchall():
+            con.execute(f"UPDATE materials SET {sets},updated_at=? WHERE id=?", list(new[1:]) + [time.time(), r["id"]])
+    for tool_prefix, mat_name, op, fields in KNOWN_GOOD:
+        tool = con.execute("SELECT id FROM tools WHERE name LIKE ? ORDER BY id LIMIT 1", (tool_prefix + "%",)).fetchone()
+        mat = con.execute("SELECT id FROM materials WHERE name=? ORDER BY id LIMIT 1", (mat_name,)).fetchone()
+        if tool and mat and not con.execute("SELECT 1 FROM recipes WHERE tool_id=? AND material_id=? AND op=?",
+                                            (tool["id"], mat["id"], op)).fetchone():
+            insert(con, "recipes", clean("recipes", dict(fields, tool_id=tool["id"], material_id=mat["id"], op=op)))
     con.execute("INSERT INTO settings(key,value) VALUES('seed_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SEED_VERSION),))
 
