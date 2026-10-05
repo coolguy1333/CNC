@@ -118,7 +118,7 @@ SEED_TOOLS = [
 ]
 #           name,                 heat,      sfmC, sfmH, fz,    slot, side, woc,  plunge, kc
 SEED_MATERIALS = [
-    ("Aluminum 6061",        "metal",   800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700),
+    ("Aluminum 6061",        "metal",   1100, 250, 0.019, 0.34, 1.0, 0.15, 0.30, 700),
     ("Brass / Bronze",       "metal",   400, 150, 0.010, 0.20, 0.6, 0.10, 0.30, 1200),
     ("Acrylic (cast)",       "plastic", 1000, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 300),
     ("Polycarbonate",        "plastic", 900, 400, 0.020, 0.50, 1.0, 0.30, 0.40, 250),
@@ -129,6 +129,11 @@ SEED_MATERIALS = [
     ("MDF / Spoilboard",     "wood",    1000, 600, 0.030, 1.00, 1.5, 0.60, 0.50, 50),
     ("Foam (XPS / EVA)",     "wood",    1500, 800, 0.050, 2.00, 3.0, 0.80, 0.60, 5),
 ]
+
+# Seed v1 aluminum row; replaced on upgrade only if the user never edited it.
+V1_ALUMINUM = ("Aluminum 6061", "metal", 800, 250, 0.017, 0.30, 1.0, 0.15, 0.30, 700)
+MAT_KEYS = ["name", "heat", "sfm_carbide", "sfm_hss", "fz_ratio", "doc_slot", "doc_side", "woc", "plunge", "kc"]
+SEED_VERSION = 2
 
 _db_lock = threading.Lock()
 
@@ -173,10 +178,32 @@ def init_db():
             for t in SEED_TOOLS:
                 insert(con, "tools", clean("tools", t))
             for m in SEED_MATERIALS:
-                keys = ["name", "heat", "sfm_carbide", "sfm_hss", "fz_ratio", "doc_slot", "doc_side", "woc", "plunge", "kc"]
-                insert(con, "materials", clean("materials", dict(zip(keys, m))))
+                insert(con, "materials", clean("materials", dict(zip(MAT_KEYS, m))))
             con.execute("INSERT INTO settings(key,value) VALUES('seeded','1')")
+        upgrade_seed(con)
         con.commit()
+
+
+def upgrade_seed(con):
+    """v2: aluminum defaults matched to a proven 4.6 mm slotting run (research + user's 68 ipm / 0.0625 in cut)."""
+    row = con.execute("SELECT value FROM settings WHERE key='seed_version'").fetchone()
+    if row and int(row["value"]) >= SEED_VERSION:
+        return
+    new = next(m for m in SEED_MATERIALS if m[0] == "Aluminum 6061")
+    cond = " AND ".join(f"{k}=?" for k in MAT_KEYS)
+    for r in con.execute(f"SELECT id FROM materials WHERE {cond}", V1_ALUMINUM).fetchall():
+        sets = ",".join(f"{k}=?" for k in MAT_KEYS[1:])
+        con.execute(f"UPDATE materials SET {sets},updated_at=? WHERE id=?", list(new[1:]) + [time.time(), r["id"]])
+    tool = con.execute("SELECT id FROM tools WHERE name LIKE 'Thrifty Bot 5 mm%' ORDER BY id LIMIT 1").fetchone()
+    mat = con.execute("SELECT id FROM materials WHERE name='Aluminum 6061' ORDER BY id LIMIT 1").fetchone()
+    if tool and mat and not con.execute("SELECT 1 FROM recipes WHERE tool_id=? AND material_id=? AND op='slot'",
+                                        (tool["id"], mat["id"])).fetchone():
+        insert(con, "recipes", clean("recipes", dict(
+            tool_id=tool["id"], material_id=mat["id"], op="slot", rpm=24000, feed_mm=1727.2, plunge_mm=508,
+            doc_mm=1.5875, woc_mm=4.6, rating=3,
+            notes='Your run: 24,000 rpm, 68 in/min, 0.0625" depth, full slot (0.0028"/tooth).')))
+    con.execute("INSERT INTO settings(key,value) VALUES('seed_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(SEED_VERSION),))
 
 
 class ValidationError(ValueError):
@@ -222,7 +249,7 @@ def rows(con, table):
 
 def get_settings(con):
     s = dict(SETTINGS_DEFAULTS)
-    for r in con.execute("SELECT key,value FROM settings WHERE key != 'seeded'"):
+    for r in con.execute("SELECT key,value FROM settings WHERE key NOT IN ('seeded','seed_version')"):
         if r["key"] in s:
             s[r["key"]] = r["value"] if r["key"] == "units" else float(r["value"])
     return s
