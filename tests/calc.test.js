@@ -103,8 +103,19 @@ test("chip thinning and pass counting", () => {
   near(odd.docPass, 1.25, 1e-9);
   near(odd.doc, 1.5875, 1e-3);
   const through = rec({ material: "aluminum", tool: T5, total_mm: 3.375 });
-  assert.equal(through.passes, 3, "1/8 in plus 0.2 mm into the spoilboard is three passes, like CAM would do");
+  assert.equal(through.passes, 3, "without knowing the stock thickness, 3.375 mm is three passes");
   near(through.doc, 1.5875, 1e-3);
+  // depth cut into the spoilboard doesn't add passes: they are counted on the stock
+  const al = rec({ material: "aluminum", tool: T5, stock_mm: 3.175, total_mm: 3.375 });
+  assert.equal(al.passes, 2);
+  near(al.docPass, 1.6875, 1e-9);
+  const pc = rec({ material: "polycarbonate", tool: T5, stock_mm: 3.175, total_mm: 3.375 });
+  assert.equal(pc.passes, 1, "1/8 in polycarbonate through the plate is still one pass");
+  assert.equal(rec({ material: "aluminum", tool: T5, stock_mm: 1.5875, total_mm: 1.7875 }).passes, 2, "but not if it would push the pass 10% over");
+  const quarter = rec({ material: "aluminum", tool: T5, stock_mm: 6.35, total_mm: 6.55 });
+  assert.equal(quarter.passes, 4);
+  near(quarter.docPass, 1.6375, 1e-9);
+  assert.equal(rec({ material: "aluminum", tool: T5, stock_mm: 3.175, total_mm: 3.175 }).passes, 2);
 });
 
 test("machine limits cap rpm and feed", () => {
@@ -493,4 +504,41 @@ test("pneumatics", () => {
   near(c.freeAirCycle, c.volCycleWorking * (60 + 14.7) / 14.7, 1e-9);
   const drop = Frc.tankDrop(c.volCycleWorking, 60, 100);
   near(drop, (74.7 * c.volCycleWorking) / 100, 1e-9);
+});
+
+test("the checker agrees with the tested settings and flags the rest", () => {
+  const chk = o => Cnc.checkSettings(Object.assign({ material: "aluminum", tool: T5, rpm: 24000, feed: 1727.2, doc: 1.5875, ae: 0, machine: MACHINE }, o));
+  const good = chk({});
+  near(good.ratio, 1, 0.01, "the tested slot is exactly right");
+  assert.equal(good.verdict.level, "ok");
+  assert.equal(chk({ feed: 1727.2 * 0.6 }).verdict.level, "warn", "a bit light");
+  assert.equal(chk({ feed: 1727.2 * 0.25 }).verdict.level, "bad", "rubbing");
+  assert.equal(chk({ feed: 1727.2 * 1.4 }).verdict.level, "warn", "aggressive");
+  assert.equal(chk({ feed: 1727.2 * 2 }).verdict.level, "bad", "too hard");
+  // a narrow cut can take a higher feed for the same chip thickness
+  const narrow = chk({ ae: 4.6 * 0.1, feed: 1727.2 * Cnc.chipThinning(0.1) });
+  near(narrow.ratio, 1, 0.01);
+  assert.equal(narrow.verdict.level, "ok");
+  // the feed to use at your own rpm
+  near(chk({ rpm: 12000 }).feedHere, 12000 * 1 * (1727.2 / 24000), 0.5);
+  assert.ok(chk({ feed: 5000 }).notes.some(n => n.level === "bad" && /maximum/.test(n.text)));
+  assert.ok(chk({ rpm: 30000 }).notes.some(n => n.level === "bad" && /can't reach/.test(n.text)));
+  assert.ok(chk({ doc: 30 }).notes.some(n => n.level === "bad" && /flute/.test(n.text)));
+  assert.ok(chk({ doc: 5, stick_mm: 40, feed: 3000 }).notes.some(n => /deflection|spindle load|depth we'd use/.test(n.text)));
+  assert.ok(chk({ rpm: 6000, feed: 6000 * 1727.2 / 24000 }).notes.some(n => /8,000/.test(n.text)));
+  assert.throws(() => chk({ rpm: 0 }), /Enter/);
+  assert.throws(() => chk({ material: "spoilboard" }), /endmill/);
+  // with a team-tested recipe the reference is the recipe
+  const recipe = { rpm: 11000, feed_mm: 254, plunge_mm: 254, ramp_mm: 254 };
+  const t6 = tool({ actual_mm: 6, nominal_mm: 6, flute_len_mm: 20 });
+  const mine = Cnc.checkSettings({ material: "aluminum", tool: t6, rpm: 11000, feed: 254, machine: MACHINE, recipe });
+  near(mine.ratio, 1, 1e-9);
+  assert.equal(mine.source, "tested");
+});
+
+test("shared load model is unchanged by the refactor", () => {
+  const r = rec({ material: "aluminum", tool: T5, recipe: { rpm: 24000, feed_mm: 1727.2, plunge_mm: 508, ramp_mm: 1143, doc_mm: 1.5875 } });
+  near(r.power, 147, 3);
+  near(r.defl * 1000, 1.6, 0.2);
+  assert.ok(r.availW > 2000);
 });

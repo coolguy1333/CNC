@@ -254,7 +254,7 @@
     async render(root) {
       const vals = Object.assign({}, App.data.settings);
       let backups = [];
-      try { backups = (await api("GET", "/api/backups")).backups; } catch (e) { /* ignore */ }
+      try { backups = (await api("GET", "/api/backups")).backups || []; } catch (e) { /* the list is a nicety; the page works without it */ }
       root.innerHTML = html`
         <h1>Machine &amp; Data</h1>
         <div class="grid2">

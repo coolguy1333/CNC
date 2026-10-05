@@ -98,6 +98,9 @@ form.inline{display:flex;flex-wrap:wrap;gap:.6rem;align-items:flex-end;margin:.8
 .err{margin-top:.6rem;padding:.55rem .75rem;border-left:4px solid var(--bad);background:var(--tile);color:var(--bad);border-radius:6px}.err[hidden]{display:none}
 .stars{color:var(--acc);letter-spacing:1px;white-space:nowrap}
 
+.verdict{display:flex;flex-direction:column;gap:.15rem;padding:.7rem .9rem;border-radius:10px;border:2px solid var(--ok);background:var(--tile);margin:.4rem 0 .6rem}
+.verdict b{font-size:1.15rem}.verdict.warn{border-color:var(--warn)}.verdict.bad{border-color:var(--bad)}.verdict.ok b{color:var(--ok)}.verdict.warn b{color:var(--warn)}.verdict.bad b{color:var(--bad)}
+
 /* tables */
 .tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;font-size:.92rem}

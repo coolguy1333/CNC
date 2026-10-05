@@ -9,4 +9,5 @@ RUN chmod -R a+rX /app
 USER app
 ENV DATA_DIR=/data
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('PORT', '8080'), timeout=4)"
 CMD ["python", "server.py"]

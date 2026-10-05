@@ -6,6 +6,7 @@
   const inch = mm => fmt(mm / IN, 4) + " in";
 
   // ================================================================== Drill, tap & hardware
+  const RIVETS = [["3/32 in", "#40", 0.098], ["1/8 in", "#30", 0.1285], ["5/32 in", "#20", 0.161], ["3/16 in", "#11", 0.191], ["1/4 in", "F", 0.257]];
   const threadOpts = Shop.ALL_THREADS.map(t => [t.name, t.name + (t.fine ? " (fine)" : "")]);
   calcPage({
     id: "drilltap", title: "Drill, Tap & Hardware", keywords: "tap drill clearance counterbore screw thread 10-32 1/4-20 m5 m4 shcs socket head bolt hole",
@@ -39,7 +40,10 @@
           ${note("info", "Polycarbonate is a poor thing to tap and cracks easily. Use a through-hole with a bolt and nut, or a rivet.")}
           ${cb ? note("info", "Counterbore = head diameter plus a little clearance, and a bit deeper than the head is tall. Cut a test hole if a part has to fit tight.") : ""}
           ${cl && cl.system === "imperial" ? note("info", "Clearance sizes are the standard close-fit and free-fit drills (Machinery's Handbook).") : note("info", "Metric clearance holes follow ISO 273 (fine / normal / loose).")}
-        </div>`;
+        </div>
+        <h3>Pop (blind) rivet holes</h3>
+        ${table(["Rivet", "Drill", "Hole"], RIVETS.map(([r, d, dia]) => [r, d, `${fmt(dia, 4)} in (${fmt(dia * IN, 2)} mm)`]))}
+        <p class="mut small">Standard hole sizes from rivet suppliers. Aluminum rivets in aluminum plate are the usual FRC combination.</p>`;
     },
   });
 

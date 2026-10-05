@@ -11,13 +11,13 @@ Python standard library only (HTTP server + SQLite). No login, no build step, no
 
 | Area | Pages |
 | --- | --- |
-| **CNC Router** | **Feeds & Speeds** (pick the material and endmill, get rpm, feed, depth, stepover, plunge/ramp), Spoilboard Surfacing (lines, time, sketch), Hole & Tool Size (toolpath circle, measure what an undersized tool really cuts, fits, FRC bearings) |
-| **Machining** | Drill, Tap & Hardware (tap drill, clearance, socket-head counterbore, thread-forming holes); Mill, Drill, Lathe & Saw speeds and bandsaw blade choice |
+| **CNC Router** | **Feeds & Speeds** (pick the material and endmill, get rpm, feed, depth, stepover, plunge/ramp), **Check My Settings** (type in what CAM has, get a "looks good / fix this" verdict), Spoilboard Surfacing (lines, time, sketch), Hole & Tool Size (toolpath circle, measure what an undersized tool really cuts, fits, FRC bearings) |
+| **Machining** | Drill, Tap & Hardware (tap drill, clearance, socket-head counterbore, thread-forming holes, pop-rivet holes); Mill, Drill, Lathe & Saw speeds and bandsaw blade choice |
 | **Fabrication** | Weight & Stock, Cut List optimiser, Sheet Bending, Converter & Fractions (with nearest drill) |
 | **FRC Engineering** | Drivetrain, Elevator, Arm, Flywheel, Belts & Chain, Wiring & Power, Pneumatics, Weight Budget |
 | **Our Shop** | Tool Library, Tested Settings, Job Log, Inventory (low-stock flags), Maintenance (overdue flags) |
-| **Guides** | Shop Safety, Running the OMIO X8 (checklists), Troubleshooting, Materials & Terms, Links |
-| **Settings** | Machine limits, backups and restore |
+| **Guides** | Shop Safety, Running the OMIO X8 (checklists), CAM Checklist (Fusion 360), Troubleshooting, Materials & Terms, Links |
+| **Settings** | Machine & Data: machine limits, backups and restore, export/import |
 
 Materials are deliberately limited to what the shop cuts: **aluminum (6061), polycarbonate, and the MDF spoilboard**
 (surfaced with the facemill).
@@ -33,9 +33,14 @@ The model is calibrated to the team's own tested cuts, and those win whenever th
 | 2.5 in facemill, MDF spoilboard | 5,000 rpm, 30 in/min (762 mm/min), 0.0015 in/tooth, 4 flutes |
 
 For a tool and material with no tested setting, the calculator scales from those numbers (chipload and depth in
-proportion to diameter, surface speed from the material, chip thinning for narrow cuts) and checks spindle load and
-tool deflection. Other operations (pocket, side cut, adaptive, finish) scale from the tested slot. "Save as tested"
-turns any run that worked into the shop's recommendation. `tests/calc.test.js` pins the calibration.
+proportion to diameter, surface speed from the material, chip thinning for narrow cuts, less chipload per tooth on
+multi-flute tools because chip room is shared) and checks spindle load and tool deflection. Other operations (pocket,
+side cut, adaptive, finish) scale from the tested slot. Passes are counted like CAM counts them (stock thickness
+divided by the depth per pass); the optional extra depth into the spoilboard rides along on the last pass.
+"Save as tested" turns any run that worked into the shop's recommendation. **Check My Settings** runs the same model
+backwards: give it the rpm and feed that CAM has and it reports the chipload against what we'd use, the spindle load and
+the tool deflection. `tests/calc.test.js` pins the calibration and `tests/fuzz.test.js` throws random and extreme inputs
+at every calculator.
 
 Everything is a starting point. Run a scrap test first.
 
@@ -44,7 +49,7 @@ Everything is a starting point. Run a scrap test first.
 ```bash
 DATA_DIR=./data python3 server.py        # http://localhost:8080
 python3 -m unittest discover tests       # server, calculator maths and (if Playwright is installed) browser tests
-node --test tests/calc.test.js           # just the calculators
+node --test tests/calc.test.js tests/fuzz.test.js   # just the calculators, including the random-input fuzzing
 ```
 
 ## Deploy with WebManager

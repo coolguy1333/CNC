@@ -130,6 +130,45 @@
       <li>${link("https://www.chiefdelphi.com/t/omio-cnc-first-setup/441637", "Chief Delphi: Omio CNC First Setup")}</li>
     </ul>`);
 
+  // ================================================================== CAM checklist
+  guide("cam", "CAM Checklist", "cam fusion 360 toolpath contour pocket tabs stepdown ramp simulate post g-code units zero stock checklist program", () => html`
+    <p class="mut">Written for Fusion 360 (the team's CAM) but it applies to any CAM package. Menu names move around between versions, so treat the wording as a guide.</p>
+    <h2>Before you make a toolpath</h2>
+    ${checklist("cam-setup", [
+      "Units: the document, the tool library and the post are all in the units you think. The team's library mixes inches and millimetres, so look twice.",
+      "Model the stock at its real size and thickness. Put X/Y zero on a corner you can find on the machine.",
+      "Z zero is where you'll set it at the machine (top of the stock, or as the team does). The program and the machine must agree.",
+      "Model the clamps and screws too, so the simulation can warn you before the tool finds them.",
+    ])}
+    <h2>Tool and cutting data</h2>
+    ${checklist("cam-tool", [
+      "Pick the tool from the library and check its real cutting diameter (Thrifty Bot 5 mm cuts 4.6 mm, 4 mm cuts 3.7 mm). Use Hole & Tool Size to measure yours.",
+      "The flute length is longer than the deepest cut, and the stick-out is as short as you can make it.",
+      "Type in the spindle speed, cutting feed, plunge and ramp feed from Feeds & Speeds (“Copy for CAM”). Use the ramp angle the team uses (2°).",
+      "Feed per tooth in CAM matches the chipload this app shows. If it doesn't, one of them has the wrong flute count or diameter.",
+    ])}
+    <h2>Toolpaths</h2>
+    <ul>
+      <li><b>Order:</b> drill or bore the inside features first, pockets next, then cut the outside last. Keep a part held (tabs) until the final pass so it can't move or get thrown.</li>
+      <li><b>Cut-outs:</b> a 2D contour with multiple depths. The max stepdown is the depth per pass from Feeds &amp; Speeds. Use ramp lead-ins instead of plunging.</li>
+      <li><b>Through-cuts:</b> set the bottom a little below the stock (about 0.2 mm) so the tool cuts into the spoilboard and the cut goes all the way through.</li>
+      <li><b>Tabs:</b> a few small bridges hold the part in place (about 1/16 in thick and 1/4 in wide is typical). Cut them off and file them flat afterwards.</li>
+      <li><b>Pockets:</b> clear with a light width of cut (for aluminum, 40% of the tool or less) and a lead-in that ramps. Corners can't be sharper than the tool radius.</li>
+      <li><b>Holes:</b> bore a hole that's bigger than the tool by cutting a circle; a hole barely larger than the tool is better drilled. For close fits leave a little stock and take a finishing pass.</li>
+      <li><b>Polycarbonate:</b> radius the inside corners, and keep the tool moving (no dwell) so it can't melt.</li>
+    </ul>
+    <h2>Check before you post</h2>
+    ${checklist("cam-check", [
+      "Run the simulation. Watch for the tool crossing clamps, rapids through the stock, or cuts deeper than the flute.",
+      "Look at the machining time and compare it with the estimate from Feeds & Speeds.",
+      "Post-process, open the G-code and read the first lines: units (G20 inches or G21 millimetres), work offset, spindle speed, the first moves.",
+      "The OMIO has no automatic tool changer: make sure the program pauses (or you run each tool as its own file) for any tool change.",
+      "Do an air cut with Z raised before the first real cut.",
+    ])}
+    <h2>After the run</h2>
+    <ul><li>Measure the key sizes with calipers. If something is off, fix the tool diameter in CAM first.</li>
+      <li>Log the job, and save the settings as tested if they worked well.</li></ul>`);
+
   // ================================================================== Troubleshooting
   const problems = [
     ["Chatter: loud buzzing or a rippled wall", "The tool is vibrating against the work.",
@@ -214,7 +253,6 @@
       ${L("https://docs.wcproducts.com/omio-cnc-router-x8-usb", "OMIO X8 documentation", "WCP's setup and operation guide")}
       ${L("https://docs.wcproducts.com/omio-cnc-router-x8-usb/misc/recommendations", "WCP feeds and speeds recommendations", "table for slotting aluminum")}
       ${L("https://www.thethriftybot.com/products/qty-2-5mm-carbide-single-flute-endmill", "Thrifty Bot 5 mm carbide single-flute endmill", "5 mm × 12 mm cut × 50 mm long, sold in pairs")}
-      ${L("https://wcproducts.com/products/srpp-sheets", "WCP SRPP sheets", "self-reinforced polypropylene sheet from WCP")}
       ${L("https://www.chiefdelphi.com/t/omio-router-user-instructions/396810", "Chief Delphi: Omio Router User Instructions", "community how-to")}
       ${L("https://www.chiefdelphi.com/t/omio-cnc-first-setup/441637", "Chief Delphi: Omio CNC First Setup", "first-time setup experiences")}
     </ul>

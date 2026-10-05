@@ -68,6 +68,11 @@ test("every page loads without errors and is accessible", { skip }, async () => 
       });
       document.querySelectorAll("#main button").forEach(b => { if (!b.textContent.trim() && !b.getAttribute("aria-label")) out.push("unnamed button"); });
       if (!document.querySelector("#main h1")) out.push("no h1");
+      const shown = document.querySelector("#main").innerText;
+      const entity = shown.match(/&(?:[a-z]+|#\d+);|<\/?[a-z][a-z0-9]*[\s>]/i);
+      if (entity) out.push("escaped markup showing as text on the page: " + entity[0]);
+      const junk = shown.match(/\b(?:undefined|NaN|Infinity)\b|\[object /);
+      if (junk) out.push("broken value on the page: " + junk[0]);
       return out;
     });
     assert.deepEqual(issues, [], `${id}: ${issues.join(", ")}`);
@@ -98,12 +103,14 @@ test("feeds & speeds starts on the team's tested aluminum settings", { skip }, a
   assert.match(await tileText(page, "Spindle speed"), /24,000 rpm/);
   assert.match(await tileText(page, "Cutting feed"), /68 in\/min/);
   assert.match(await tileText(page, "Cutting feed"), /1727 mm\/min/);
-  assert.match(await tileText(page, "Max stepdown"), /0\.0625 in/);
+  assert.match(await tileText(page, "Depth per pass"), /0\.0625 in/);
+  assert.match(await tileText(page, "Depth per pass"), /2 passes for 0\.125 in/);
   assert.match(await page.locator("#out").innerText(), /Team-tested setting/);
   // polycarbonate
   await page.click('#form [data-f="material"] button[data-v="polycarbonate"]');
   assert.match(await tileText(page, "Cutting feed"), /155 in\/min/);
-  assert.match(await tileText(page, "Max stepdown"), /0\.125 in/);
+  assert.match(await tileText(page, "Depth per pass"), /0\.125 in/);
+  assert.match(await tileText(page, "Depth per pass"), /1 pass for 0\.125 in/);
   // other tool: tested 6 mm settings are the team's, however conservative
   await page.selectOption("#f_toolId", { label: "6 mm endmill" });
   assert.match(await tileText(page, "Spindle speed"), /22,000 rpm/);
@@ -157,6 +164,24 @@ test("save a tested setting and log a job from the calculator", { skip }, async 
   await page.waitForFunction(() => !document.querySelector("#dlg").open);
   const log = await api(page, "GET", "api/joblog");
   assert.ok(log.some(j => j.name === "Browser gusset" && j.rpm === 24000));
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("check my settings: verdicts follow the numbers", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "check");
+  await page.waitForSelector("#out .verdict");
+  assert.match(await page.locator("#out .verdict").innerText(), /Looks good/);        // the default is the team's tested 5 mm slot
+  await page.fill("#f_feed", "136");                                                    // in/min: twice the tested 68
+  assert.match(await page.locator("#out .verdict").innerText(), /Fix this/);
+  await page.fill("#f_feed", "17");
+  assert.match(await page.locator("#out .verdict").innerText(), /Fix this/);          // far too light
+  await page.fill("#f_feed", "45");
+  assert.match(await page.locator("#out .verdict").innerText(), /Check this/);        // on the light side
+  assert.match(await tileText(page, "At your rpm"), /68 in\/min/);
+  await page.click('[data-f="material"] button[data-v="polycarbonate"]');
+  assert.match(await page.locator("#out .verdict").innerText(), /Fix this|Check this/);
   assert.deepEqual(page.problems, []);
   await page.ctx.close();
 });
@@ -259,6 +284,36 @@ test("search and the phone menu", { skip }, async () => {
   await m.waitForSelector("#main h1:has-text('Weight')");
   assert.equal(await m.evaluate(() => document.body.classList.contains("menu")), false, "the menu closes after choosing a page");
   await m.ctx.close();
+});
+
+test("a slow page change never steals focus from what you just clicked", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "cnc");
+  await page.route("**/api/rev", async route => { await wait(500); await route.continue(); });
+  await page.click('#nav a[data-id="weight"]');        // the page swap now waits half a second for the revision check
+  await page.focus("#search");                         // and the person moves on before it finishes
+  await page.waitForFunction(() => /Weight/.test((document.querySelector("#main h1") || {}).textContent || ""));
+  assert.equal(await page.evaluate(() => document.activeElement.id), "search");
+  await page.unroute("**/api/rev");
+  await page.evaluate(() => document.activeElement.blur());
+  await go(page, "drive");                             // with nothing else focused, the new page does get focus
+  assert.equal(await page.evaluate(() => document.activeElement.id), "main");
+  await page.ctx.close();
+});
+
+test("clicking through pages quickly always ends on the last one clicked", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "cnc");
+  let n = 0;
+  await page.route("**/api/rev", async route => { if (n++ === 0) await wait(700); await route.continue(); });  // only the first check is slow
+  await page.click('#nav a[data-id="weight"]');
+  await page.click('#nav a[data-id="cutlist"]');
+  await page.waitForFunction(() => /Cut List/.test((document.querySelector("#main h1") || {}).textContent || ""));
+  await wait(1000);                                    // by now the slow check for the first click has finished too
+  assert.match(await page.locator("#main h1").innerText(), /Cut List/);
+  assert.match(page.url(), /#\/cutlist$/);
+  assert.equal(await page.getAttribute('#nav a[aria-current="page"]', "data-id"), "cutlist");
+  await page.ctx.close();
 });
 
 test("weight calculator feeds the weight budget", { skip }, async () => {

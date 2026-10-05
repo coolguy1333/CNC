@@ -20,6 +20,7 @@
   const HSS_FZ = 0.6; // HSS tools run a lighter chipload than carbide
   const MIN_DOC = 0.05;
   const PASS_SLACK = 0.02; // a pass up to 2% over the limit still counts as one: 0.508 mm is one 0.020" skim, not two
+  const PASS_OVER = 0.10;  // extra depth into the spoilboard may push a pass up to 10% past the limit before another pass is added
 
   const MATERIALS = {
     aluminum: {
@@ -80,6 +81,27 @@
     };
   }
 
+  /** Cutting force, spindle load and tool deflection for an end mill at a given rpm, width of cut and stick-out. */
+  function loadModel(M, tool, machine, rpm, ae, stick) {
+    const D = tool.actual_mm, z = tool.flutes || 1;
+    const vc = (Math.PI * D * rpm) / 1000;              // m/min
+    const aeFrac = ae / D;
+    const I = (Math.PI * Math.pow(D * 0.7, 4)) / 64;   // the flute leaves roughly a 70% core
+    const E = tool.mat === "hss" ? 210e3 : 580e3;       // N/mm^2
+    const phi = aeFrac >= 1 ? Math.PI : Math.acos(1 - 2 * aeFrac);
+    const engaged = Math.min(1, (z * phi) / (2 * Math.PI)) || 1;
+    return {
+      vc, availW: machine.spindle_w * Math.min(1, rpm / machine.max_rpm),
+      loads(feed, d) {
+        const mrr = (feed / 60) * ae * d;               // mm^3/s
+        const power = (M.kc * mrr) / 1000;              // W
+        const ft = power / (vc / 60 || 1);              // mean tangential force, N
+        const fpeak = (ft / engaged) * 1.2;             // peak force, N
+        return { mrr, power, fpeak, defl: (fpeak * Math.pow(stick, 3)) / (3 * E * I) };
+      },
+    };
+  }
+
   function solveEndmill(ctx, base) {
     const { M, tool, op, agg, machine, total_mm, cool } = ctx;
     const o = OPS[op];
@@ -108,19 +130,9 @@
     if (total_mm > 0 && doc > total_mm) { doc = total_mm; docLimit = "stock thickness"; }
 
     const stick = ctx.stick_mm > 0 ? ctx.stick_mm : (total_mm || doc) + 3;
-    const feedPerSec = feed / 60;
-    const I = (Math.PI * Math.pow(D * 0.7, 4)) / 64;
-    const E = tool.mat === "hss" ? 210e3 : 580e3; // N/mm^2
-    const phi = aeFrac >= 1 ? Math.PI : Math.acos(1 - 2 * aeFrac);
-    const engaged = Math.min(1, (z * phi) / (2 * Math.PI)) || 1;
-    const availW = machine.spindle_w * Math.min(1, rpm / machine.max_rpm);
-    const loads = d => {
-      const mrr = feedPerSec * ae * d;                  // mm^3/s
-      const power = (M.kc * mrr) / 1000;                // W
-      const ft = power / (vc / 60 || 1);                // mean tangential force, N
-      const fpeak = (ft / engaged) * 1.2;               // peak force, N
-      return { mrr, power, fpeak, defl: (fpeak * Math.pow(stick, 3)) / (3 * E * I) };
-    };
+    const lm = loadModel(M, tool, machine, rpm, ae, stick);
+    const availW = lm.availW;
+    const loads = d => lm.loads(feed, d);
     let L = loads(doc);
     if (!proven) {
       if (L.defl > machine.defl_limit_mm) { doc *= machine.defl_limit_mm / L.defl; docLimit = "tool deflection"; L = loads(doc); }
@@ -130,7 +142,10 @@
     const docMax = doc;
     let passes = 0, docPass = doc;
     if (total_mm > 0) {
-      passes = Math.max(1, Math.ceil(total_mm / doc - PASS_SLACK));
+      // passes are counted on the stock thickness; depth cut into the spoilboard rides along for free (up to PASS_OVER)
+      const stock = ctx.stock_mm > 0 ? Math.min(ctx.stock_mm, total_mm) : total_mm;
+      passes = Math.max(1, Math.ceil(stock / doc - PASS_SLACK));
+      while (total_mm / passes > doc * (1 + PASS_OVER) && passes < 5000) passes++;
       docPass = total_mm / passes;
       L = loads(docPass);
     }
@@ -176,7 +191,7 @@
   }
 
   /**
-   * recommend({material, tool, op, total_mm, stick_mm, cool, agg, machine, recipe, stepover})
+   * recommend({material, tool, op, total_mm, stock_mm, stick_mm, cool, agg, machine, recipe, stepover})
    * tool: {actual_mm, flutes, flute_len_mm, overall_mm, mat: 'carbide'|'hss', kind, feed_factor, nominal_mm}
    * recipe: a tested setting {rpm, feed_mm, plunge_mm, ramp_mm, doc_mm} for this tool + material (optional)
    */
@@ -194,6 +209,7 @@
     const ctx = {
       M, tool, machine, material: inp.material, op: inp.op || "slot", agg: clamp(pos(inp.agg, 1), 0.3, 2), total_mm: isFinite(inp.total_mm) ? Math.max(0, inp.total_mm) : 0,
       stick_mm: isFinite(inp.stick_mm) ? Math.max(0, inp.stick_mm) : 0, cool: inp.cool || "mist", stepover: inp.stepover,
+      stock_mm: isFinite(inp.stock_mm) ? Math.max(0, inp.stock_mm) : 0,   // material thickness, when total_mm also includes depth into the spoilboard
     };
     const face = inp.material === "spoilboard";
     if (face) ctx.op = "surface";
@@ -211,6 +227,7 @@
     // rpm outside the machine's range is the machine's problem, not the tested setting's: flag it, don't silently change it
     r.source = hasTested ? (ctx.op === "slot" || face ? "tested" : "tested-scaled") : "model";
     r.material = inp.material;
+    r.tool = tool;
     r.op = ctx.op;
     r.model = hasTested ? { rpm: model.rpm, feed: model.feed, doc: model.doc, fz: model.fz } : null;
     r.recipe = hasTested ? inp.recipe : null;
@@ -273,6 +290,54 @@
     return notes;
   }
 
+  /**
+   * "Is this OK?" Compare settings typed into CAM with what the calculator would give for the same tool and material.
+   * inp: {material, tool, rpm, feed, doc, ae (0 = full slot), stick_mm, machine, recipe}
+   */
+  function checkSettings(inp) {
+    const M = MATERIALS[inp.material];
+    if (!M || inp.material === "spoilboard") throw new Error("Check aluminum or polycarbonate cuts with an endmill");
+    const machine = Object.assign({}, defaultMachine, inp.machine);
+    if (!(inp.rpm > 0) || !(inp.feed > 0)) throw new Error("Enter the spindle speed and the feed");
+    const ref = recommend({ material: inp.material, tool: inp.tool, op: "slot", agg: 1, total_mm: 0, machine, recipe: inp.recipe });
+    const D = ref.tool.actual_mm, z = ref.tool.flutes;
+    const ae = inp.ae > 0 ? Math.min(inp.ae, D) : D;
+    const aeFrac = ae / D;
+    const fz = inp.feed / (inp.rpm * z);
+    const thin = chipThinning(aeFrac);
+    const ratio = Math.min(99, fz / thin / (ref.fz > 0 ? ref.fz : 1e-9));   // 1 = the chipload we would use for a slot
+    const doc = inp.doc > 0 ? inp.doc : ref.doc;
+    const stick = inp.stick_mm > 0 ? inp.stick_mm : doc + 3;
+    const L = loadModel(M, ref.tool, machine, inp.rpm, ae, stick).loads(inp.feed, doc);
+    const availW = machine.spindle_w * Math.min(1, inp.rpm / machine.max_rpm);
+    const notes = [];
+    const add = (level, text) => notes.push({ level, text });
+    let verdict;
+    if (ratio < 0.4) verdict = ["bad", "Far too light. The tool will rub instead of cutting and heat up. Raise the feed or lower the rpm."];
+    else if (ratio < 0.75) verdict = ["warn", "On the light side. Safe for the tool, but aluminum can rub and weld at this chipload. Polycarbonate may melt."];
+    else if (ratio <= 1.25) verdict = ["ok", "About right."];
+    else if (ratio <= 1.6) verdict = ["warn", "Aggressive. It can work, but watch the sound, chip colour and tool wear."];
+    else verdict = ["bad", "Too aggressive. Expect a broken tool or a poor finish. Lower the feed."];
+    if (inp.feed > machine.max_feed_mm + 0.5) add("bad", `The feed is above the machine's maximum (${Math.round(machine.max_feed_mm)} mm/min).`);
+    if (inp.rpm > machine.max_rpm + 1) add("bad", `The spindle can't reach ${Math.round(inp.rpm)} rpm (limit ${Math.round(machine.max_rpm)}).`);
+    else if (inp.rpm < machine.min_rpm - 1) add("warn", `${Math.round(inp.rpm)} rpm is below the lowest speed you set for this machine (${Math.round(machine.min_rpm)}).`);
+    if (inp.rpm < 8000 && inp.rpm >= machine.min_rpm - 1) add("info", "Community advice (Chief Delphi) is to avoid running the OMIO spindle below about 8,000 rpm.");
+    if (doc > ref.tool.flute_len_mm * 0.95) add("bad", `The depth is deeper than the tool's ${fmtN(ref.tool.flute_len_mm)} mm flute.`);
+    else if (doc > ref.doc * 1.3 && ratio > 0.75) add("warn", `That is ${Math.round((doc / ref.doc) * 100)}% of the depth we'd use for this cut. Deeper passes load the tool and the spindle.`);
+    if (L.power > availW * 0.7) add("warn", `Predicted spindle load is ${Math.round((L.power / availW) * 100)}% of what is available at this rpm.`);
+    if (L.defl > machine.defl_limit_mm) add("warn", `Predicted tool deflection is ${Math.round(L.defl * 1000)} µm (your limit is ${Math.round(machine.defl_limit_mm * 1000)} µm). Expect a taper.`);
+    if (inp.material === "aluminum" && z > 1) add("info", "Multi-flute tools pack with aluminum chips; single flute clears them best.");
+    const sfm = (Math.PI * D * inp.rpm) / 1000 / FT;
+    if (ref.tool.mat === "hss" && inp.material === "aluminum" && sfm > 450) add("warn", "That surface speed is high for an HSS tool.");
+    // what the feed should be at THIS rpm to land on the recommended chipload for this width of cut
+    const feedHere = Math.min(machine.max_feed_mm, inp.rpm * z * ref.fz * thin);
+    return {
+      fz, ratio, verdict: { level: verdict[0], text: verdict[1] }, feedHere, refFeed: ref.feed, refRpm: ref.rpm, refDoc: ref.doc, refFz: ref.fz,
+      source: ref.source, sfm, power: L.power, availW, defl: L.defl, mrr: L.mrr * 60, ae, aeFrac, notes,
+    };
+  }
+  const fmtN = x => (Math.round(x * 100) / 100).toString();
+
   /** Time to run `length_mm` of toolpath, in minutes. */
   function cutMinutes(length_mm, passes, feed) {
     if (!(feed > 0)) return 0;
@@ -326,7 +391,7 @@
   }
 
   return {
-    MATERIALS, OPS, FACE, RAMP_ANGLE, HSS_FZ, IN, chipThinning, recommend, cutMinutes, spoilboardPlan, holePath, effectiveDiameter,
+    MATERIALS, OPS, FACE, RAMP_ANGLE, HSS_FZ, IN, chipThinning, recommend, checkSettings, cutMinutes, spoilboardPlan, holePath, effectiveDiameter,
     defaultMachine,
   };
 });

@@ -4,12 +4,12 @@
   const { html, $, $$, U, store, api, toast, esc } = App;
 
   const GROUPS = [
-    ["CNC Router", ["cnc", "spoil", "holes"]],
+    ["CNC Router", ["cnc", "check", "spoil", "holes"]],
     ["Machining", ["drilltap", "manual"]],
     ["Fabrication", ["weight", "cutlist", "bend", "convert"]],
     ["FRC Engineering", ["drive", "elevator", "arm", "flywheel", "belts", "elec", "pneu", "budget"]],
     ["Our Shop", ["tools", "tested", "joblog", "inventory", "maint"]],
-    ["Guides", ["safety", "omio", "trouble", "materials", "links"]],
+    ["Guides", ["safety", "omio", "cam", "trouble", "materials", "links"]],
     ["Settings", ["settings"]],
   ];
   const DATA_PAGES = new Set(["tools", "tested", "joblog", "inventory", "maint"]);
@@ -57,9 +57,13 @@
     } catch (e) { /* a network blip shouldn't stop navigation */ }
   }
 
+  let showSeq = 0;
   async function show() {
-    const id = currentId(), page = App.pages[id], main = $("#main");
-    if (App.lastId !== undefined && App.lastId !== id) await freshen();
+    const id = currentId(), page = App.pages[id], main = $("#main"), mine = ++showSeq;
+    if (App.lastId !== undefined && App.lastId !== id) {
+      await freshen();
+      if (mine !== showSeq) return;   // the person already clicked on to another page; let that one finish
+    }
     $$("#nav a").forEach(a => a.removeAttribute("aria-current"));
     const link = $(`#nav a[data-id="${id}"]`);
     if (link) link.setAttribute("aria-current", "page");
@@ -70,11 +74,16 @@
     try {
       await page.render(main);
     } catch (e) {
-      console.error(e);
+      console.error(e && e.stack ? e.stack : e);
       main.innerHTML = html`<section class="card"><h2>Something went wrong</h2><p>${e.message}</p><p><button class="btn" id="retry">Try again</button></p></section>`.s;
       $("#retry").onclick = () => show();
     }
-    if (App.lastId !== id) { window.scrollTo(0, 0); main.focus({ preventScroll: true }); } else window.scrollTo(0, scroll);
+    if (App.lastId !== id) {
+      window.scrollTo(0, 0);
+      // Hand focus to the new page (for keyboard and screen-reader users), unless the person has already moved on to something else.
+      const ae = document.activeElement;
+      if (!ae || ae === document.body || ae === main || $("#nav").contains(ae)) main.focus({ preventScroll: true });
+    } else window.scrollTo(0, scroll);
     App.lastId = id;
   }
 

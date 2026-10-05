@@ -44,6 +44,18 @@ test("Cnc.recommend never returns NaN or Infinity", () => {
   }
 });
 
+test("Cnc.checkSettings never returns NaN or Infinity", () => {
+  for (let i = 0; i < 3000; i++) {
+    const r = attempt("check", () => Cnc.checkSettings({
+      material: pick(["aluminum", "polycarbonate", "spoilboard", "x"]), rpm: num(), feed: num(), doc: num(), ae: num(), stick_mm: num(),
+      tool: { actual_mm: num(), nominal_mm: num(), flutes: pick([1, 2, 0, 50]), flute_len_mm: num(), overall_mm: num(), mat: pick(["carbide", "hss"]), kind: "flat" },
+      machine: rnd() < 0.5 ? undefined : { min_rpm: 5000, max_rpm: 24000, max_feed_mm: pick([4000, num()]), spindle_w: pick([2200, num()]), defl_limit_mm: pick([0.02, num()]) },
+      recipe: rnd() < 0.3 ? { rpm: num(), feed_mm: num() } : null,
+    }));
+    if (r) finite({ fz: r.fz, ratio: r.ratio, feedHere: r.feedHere, refFeed: r.refFeed, sfm: r.sfm, power: r.power, defl: r.defl, mrr: r.mrr }, "check");
+  }
+});
+
 test("spoilboard, hole and time helpers", () => {
   for (let i = 0; i < 2000; i++) {
     const p = attempt("plan", () => Cnc.spoilboardPlan({ diameter: num(), w: num(), l: num(), stepover: num(), margin: num(), feed: num(), depth: num(), docPerPass: num() }));

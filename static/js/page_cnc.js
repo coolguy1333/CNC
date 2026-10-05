@@ -56,7 +56,7 @@
     { id: "thk", label: "Thickness / depth to cut", type: "len", wide: true, def: 3.175, show: v => v.material !== "spoilboard" && v.thkPreset === "custom" },
     { id: "depth", label: "Depth to remove", type: "len", def: 0.5, show: v => v.material === "spoilboard",
       hint: "How much spoilboard to skim off. 0.5 mm (0.020 in) is plenty for a flatten." },
-    { id: "through", type: "check", label: "Through-cut", checkLabel: "Cut through: go a little into the spoilboard", def: true, show: v => v.material !== "spoilboard" },
+    { id: "through", type: "check", label: "Through-cut", checkLabel: "Also cut a little into the spoilboard (so it goes all the way through)", def: false, show: v => v.material !== "spoilboard" },
     { id: "extra", label: "Extra depth into spoilboard", type: "len", def: 0.2, show: v => v.material !== "spoilboard" && v.through },
     { id: "cool", label: "Cooling", type: "select", wide: true, def: "mist", options: COOL, show: v => v.material !== "spoilboard" },
     { id: "agg", label: "How hard to push", type: "seg", number: true, def: 1, options: [[0.8, "Careful"], [1, "Normal"], [1.15, "Push"]] },
@@ -96,9 +96,6 @@
           normalizeTool(vals, vals.material === "spoilboard");
           vals.cool = vals.material === "aluminum" ? "mist" : "air";
           draw(); bind();
-        } else if (id === "op") {
-          vals.through = vals.op === "slot" || vals.op === "profile" || vals.op === "finish";
-          draw(); bind();
         } else if (id === "thkPreset" && vals.thkPreset !== "custom") {
           vals.thk = +vals.thkPreset;
         }
@@ -129,7 +126,7 @@
         let recipe = tested.find(r => r.id === vals.preset) || tested[0] || null;
         let res;
         try {
-          res = Cnc.recommend({ material: vals.material, tool, op: face ? "surface" : vals.op, total_mm: total, stick_mm: vals.stick || 0, cool: vals.cool,
+          res = Cnc.recommend({ material: vals.material, tool, op: face ? "surface" : vals.op, total_mm: total, stock_mm: face ? 0 : thicknessMm, stick_mm: vals.stick || 0, cool: vals.cool,
             agg: vals.agg || 1, machine: App.machine(), recipe, stepover: 0.7 });
         } catch (e) { out.innerHTML = html`<h2>Recommended settings</h2>${note("bad", e.message)}`.s; return; }
         renderResult(out, res, tool, tested, recipe, total, thicknessMm, face);
@@ -146,7 +143,7 @@
           `Plunge feedrate: ${f("feed", res.plunge)}`,
           `Ramp feedrate: ${f("feed", res.ramp)}, ramp angle ${res.rampAngle} deg`,
           `Feed per tooth: ${fmt(res.fz, 4)} mm (${fmt(res.fz / IN, 5)} in)`,
-          `Max stepdown: ${fmt(res.doc, 4)} mm (${fmt(res.doc / IN, 4)} in)` + (res.passes ? ` -> ${res.passes} pass${res.passes > 1 ? "es" : ""} of ${fmt(res.docPass, 3)} mm for ${fmt(total, 3)} mm total` : ""),
+          res.passes ? `Depth per pass (max stepdown): ${fmt(res.docPass, 4)} mm (${fmt(res.docPass / IN, 4)} in) -> ${res.passes} pass${res.passes > 1 ? "es" : ""} for ${fmt(total, 3)} mm total` : `Max stepdown: ${fmt(res.doc, 4)} mm (${fmt(res.doc / IN, 4)} in)`,
           res.material === "spoilboard" ? `Stepover: ${fmt(res.ae, 1)} mm (${fmt(res.aeFrac * 100, 0)}% of the cutter)` : `Max stepover: ${res.aeFrac >= 0.999 ? "full width (slot)" : fmt(res.ae, 2) + " mm (" + fmt(res.aeFrac * 100, 0) + "% of the tool)"}`,
         ];
         return lines.join("\n");
@@ -170,7 +167,7 @@
           ${tiles([
             tile("Spindle speed", rpmFmt(res.rpm), `${Math.round(res.sfm)} SFM`, "main"),
             tile("Cutting feed", feedA, feedB, "main"),
-            tile("Max stepdown", U.fmt("len", res.doc, 4), res.passes ? `${res.passes} pass${res.passes > 1 ? "es" : ""} of ${U.fmt("len", res.docPass, 4)} for ${U.fmt("len", total, 4)}${!face && vals.through && vals.extra > 0 ? ` (${U.fmt("len", thicknessMm, 4)} stock + ${U.fmt("len", vals.extra, 3)} into the spoilboard)` : ""}` : "set a depth to count passes", "main"),
+            tile("Depth per pass", U.fmt("len", res.passes ? res.docPass : res.doc, 4), res.passes ? `${res.passes} pass${res.passes > 1 ? "es" : ""} for ${U.fmt("len", total, 4)}${!face && vals.through && vals.extra > 0 ? ` (${U.fmt("len", thicknessMm, 4)} stock + ${U.fmt("len", vals.extra, 3)} into the spoilboard)` : ""}${res.passes && res.doc > res.docPass * 1.02 ? ` · up to ${U.fmt("len", res.doc, 4)} is fine` : ""}` : "set a depth to count passes", "main"),
             tile(face ? "Stepover" : "Stepover (width of cut)", stepover, stepSub),
             tile("Plunge feed", plA, plB),
             tile("Ramp feed", rpA, `${res.rampAngle}° ramp${res.rampLength ? " · " + U.fmt("len", res.rampLength, 2) + " per pass" : ""}`),
@@ -224,7 +221,7 @@
         openForm({
           title: `Save tested setting: ${tool.name}, ${MAT_LABEL[vals.material]}`, fields, submit: "Save",
           intro: "Only save settings you actually ran. They become the team's recommendation for this tool and material.",
-          values: { rpm: Math.round(res.rpm), feed_mm: Math.round(res.feed), plunge_mm: Math.round(res.plunge), ramp_mm: Math.round(res.ramp), doc_mm: +fmt(res.doc, 4), woc_mm: +fmt(res.ae, 3) },
+          values: { rpm: Math.round(res.rpm), feed_mm: Math.round(res.feed), plunge_mm: Math.round(res.plunge), ramp_mm: Math.round(res.ramp), doc_mm: +fmt(res.passes ? res.docPass : res.doc, 4), woc_mm: +fmt(res.ae, 3) },
           onSubmit: async v => {
             await App.save("recipes", null, { tool_id: tool.id, material: vals.material, op: vals.material === "spoilboard" ? "surface" : vals.op, label: v.label, rpm: v.rpm, feed_mm: v.feed_mm,
               plunge_mm: v.plunge_mm, ramp_mm: v.ramp_mm, doc_mm: v.doc_mm, woc_mm: v.woc_mm, rating: v.rating, notes: v.notes });
@@ -236,9 +233,50 @@
 
       function logJob(res, tool, thicknessMm, minutes) {
         App.openJobDialog({ material: vals.material, tool_id: tool.id, thickness_mm: vals.material === "spoilboard" ? 0 : thicknessMm, rpm: Math.round(res.rpm), feed_mm: Math.round(res.feed),
-          doc_mm: +fmt(res.doc, 4), minutes: minutes ? +fmt(minutes, 1) : 0 });
+          doc_mm: +fmt(res.passes ? res.docPass : res.doc, 4), minutes: minutes ? +fmt(minutes, 1) : 0 });
       }
       update();
+    },
+  });
+
+  // ================================================================== Check my settings
+  const checkFields = [
+    { id: "material", label: "Material", type: "seg", def: "aluminum", options: [["aluminum", "Aluminum"], ["polycarbonate", "Polycarbonate"]] },
+    { id: "toolId", label: "Endmill", type: "select", wide: true, number: true, def: -1, options: () => [...toolList(false).map(t => [t.id, toolLabel(t)]), [0, "Other size…"]] },
+    { id: "cDia", label: "Cutting diameter", type: "len", def: 6.35, show: v => !v.toolId },
+    { id: "cFlutes", label: "Flutes", type: "int", def: 1, min: 1, max: 12, dp: 0, show: v => !v.toolId },
+    { id: "cMat", label: "Tool material", type: "select", def: "carbide", show: v => !v.toolId, options: [["carbide", "Carbide"], ["hss", "HSS"]] },
+    { id: "rpm", label: "Spindle speed from CAM", type: "num", unit: "rpm", def: 24000, dp: 0, min: 1 },
+    { id: "feed", label: "Cutting feed from CAM", type: "feed", def: 1727.2, min: 1 },
+    { id: "doc", label: "Depth per pass (optional)", type: "len", def: 0, hint: "0 = skip the depth check." },
+    { id: "ae", label: "Width of cut (0 = full slot)", type: "len", def: 0, hint: "How much of the tool is in the material sideways." },
+    { id: "stick", label: "Stick-out (optional)", type: "len", def: 0 },
+  ];
+  App.calcPage({
+    id: "check", title: "Check My Settings", keywords: "check verify sanity chipload too fast too slow cam fusion settings ok rubbing aggressive",
+    intro: "Typed speeds and feeds into CAM? Paste them here to see whether they're sensible for this tool and material.",
+    fields: () => checkFields,
+    init: v => normalizeTool(v, false),
+    compute(v) {
+      const tool = chosenTool(v, false);
+      if (!tool) return note("info", "Pick an endmill, or choose “Other size…” and enter its diameter.");
+      const recipe = tool.id ? testedFor(tool.id, v.material, "slot")[0] || null : null;
+      let r;
+      try { r = Cnc.checkSettings({ material: v.material, tool, rpm: v.rpm, feed: v.feed, doc: v.doc, ae: v.ae, stick_mm: v.stick, machine: App.machine(), recipe }); }
+      catch (e) { return note("bad", e.message); }
+      const ipt = mm => (U.isImp() ? `${fmt(mm / IN, 5)} in/tooth` : `${fmt(mm, 4)} mm/tooth`);
+      const level = r.verdict.level;
+      return html`<h2>Verdict</h2>
+        <div class="verdict ${level}"><b>${level === "ok" ? "Looks good" : level === "warn" ? "Check this" : "Fix this"}</b><span>${r.verdict.text}</span></div>
+        ${tiles([
+          tile("Your chipload", ipt(r.fz), `${fmt(r.ratio * 100, 0)}% of what we'd use${r.source === "model" ? "" : " (your tested setting)"}`, level === "ok" ? "main" : "main " + (level === "bad" ? "bad" : "")),
+          tile("We'd use", ipt(r.refFz), `${group(r.refRpm)} rpm, ${U.both("feed", r.refFeed)[0]} for a slot`),
+          tile("At your rpm, feed would be", U.both("feed", r.feedHere)[0], U.both("feed", r.feedHere)[1]),
+          tile("Surface speed", `${Math.round(r.sfm)} SFM`, `${group(r.refRpm)} rpm recommended`),
+          tile("Spindle load (est.)", `${Math.round(r.power)} W`, `${fmt((r.power / r.availW) * 100, 0)}% of ${Math.round(r.availW)} W`),
+          tile("Tool deflection (est.)", U.isImp() ? `${fmt((r.defl / IN) * 1000, 2)} thou` : `${fmt(r.defl * 1000, 1)} µm`, ""),
+        ])}
+        <div class="notes">${r.notes.map(n => note(n.level, n.text))}${note("info", "Width of cut is allowed for: a narrow cut thins the chip, so it can take a higher feed than a slot. Judgement beats arithmetic. Listen to the cut.")}</div>`;
     },
   });
 

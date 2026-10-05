@@ -639,6 +639,9 @@ class Handler(BaseHTTPRequestHandler):
     # -- helpers --
     sys_version = ""  # don't announce the Python version in the Server header
 
+    def version_string(self):
+        return self.server_version
+
     def ip(self):
         return client_ip(self.client_address[0], self.headers.get("X-Real-IP"))
 

@@ -94,7 +94,12 @@
     try {
       r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     } catch (e) { throw new Error("Can't reach the server. Check your connection."); }
-    const j = await r.json().catch(() => ({}));
+    let text;
+    try { text = await r.text(); } catch (e) { throw new Error("The connection dropped. Try again."); }
+    let j = {};
+    if (text) {
+      try { j = JSON.parse(text); } catch (e) { if (r.ok) throw new Error("The server sent something unexpected. Reload the page and try again."); }
+    }
     if (!r.ok) throw new Error(j.error || (r.status === 429 ? "Slow down a little." : "Request failed (" + r.status + ")"));
     return j;
   }
@@ -220,7 +225,8 @@
   function openForm({ title, fields, values, submit, intro, onSubmit, danger }) {
     const dlg = $("#dlg"), form = $("#dlgForm");
     const vals = Object.assign(defaultsOf(fields), values || {});
-    form.innerHTML = html`<h2>${title}</h2>${intro ? html`<p class="mut">${intro}</p>` : ""}${fieldsHtml(fields, vals)}<div class="err" role="alert" hidden></div><div class="dact"><button type="button" class="btn" data-cancel>Cancel</button><button class="btn pri" type="submit">${submit || "Save"}</button></div>`.s;
+    dlg.setAttribute("aria-labelledby", "dlgTitle");
+    form.innerHTML = html`<h2 id="dlgTitle">${title}</h2>${intro ? html`<p class="mut">${intro}</p>` : ""}${fieldsHtml(fields, vals)}<div class="err" role="alert" hidden></div><div class="dact"><button type="button" class="btn" data-cancel>Cancel</button><button class="btn pri" type="submit">${submit || "Save"}</button></div>`.s;
     bindForm(form, fields, vals);
     const err = $(".err", form);
     $("[data-cancel]", form).onclick = () => dlg.close();
