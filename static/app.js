@@ -133,12 +133,14 @@
   function viewCalc(v) {
     const d = S.data, j = S.job;
     if (!d.tools.length || !d.materials.length) { v.innerHTML = `<section>Add at least one tool and one material first.</section>`; return; }
+    const sizes = d.tools.slice().sort((x, y) => x.actual_mm - y.actual_mm);
     v.innerHTML = `
       <section>
-        <h2>Setup</h2>
-        <label>Tool</label><select id="jTool">${opts(d.tools, j.tool, t => `${t.name} (${t.actual_mm} mm, ${t.flutes}F)`)}</select>
-        <div id="toolInfo" class="mut"></div>
+        <h2>Pick material &amp; endmill</h2>
         <label>Material</label><select id="jMat">${opts(d.materials, j.mat)}</select>
+        <label>Endmill size</label><select id="jTool">${opts(sizes, j.tool, t => `${t.actual_mm} mm - ${t.name} (${t.flutes}F)`)}</select>
+        <div id="toolInfo" class="mut"></div>
+        <details style="margin-top:10px"><summary>More options (operation, depth, stick-out, cooling)</summary>
         <label>Operation</label><select id="jOp">${Object.entries(Calc.OPS).map(([k, o]) => `<option value="${k}" ${k === j.op ? "selected" : ""}>${o.label}</option>`).join("")}</select>
         <div class="row">
           <div><label>Total depth (${S.unit})</label><input id="jTotal" type="number" step="any" min="0" value="${n(fromMm(j.total), 4)}"></div>
@@ -149,6 +151,7 @@
         <label>Aggressiveness: <b id="aggV"></b></label>
         <input id="jAgg" type="range" min="50" max="130" value="${j.agg}">
         <div class="mut">Lower it if the cut sounds rough or the machine flexes.</div>
+        </details>
       </section>
       <section>
         <h2>Result</h2>
