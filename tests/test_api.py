@@ -110,6 +110,20 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(s, 200)
         self.assertIn("tools", data)
 
+    def test_seed_upgrade_only_touches_unedited_aluminum(self):
+        with server._db_lock, server.connect() as con:
+            con.execute("DELETE FROM settings WHERE key='seed_version'")
+            con.execute("UPDATE materials SET sfm_carbide=800,fz_ratio=0.017,doc_slot=0.3 WHERE name='Aluminum 6061'")
+            server.upgrade_seed(con)
+            r = con.execute("SELECT sfm_carbide,fz_ratio,doc_slot FROM materials WHERE name='Aluminum 6061'").fetchone()
+            self.assertEqual((r[0], r[1], r[2]), (1100, 0.019, 0.34))
+            con.execute("DELETE FROM settings WHERE key='seed_version'")
+            con.execute("UPDATE materials SET sfm_carbide=700 WHERE name='Aluminum 6061'")  # user-edited
+            server.upgrade_seed(con)
+            self.assertEqual(con.execute("SELECT sfm_carbide FROM materials WHERE name='Aluminum 6061'").fetchone()[0], 700)
+        st = self.req("GET", "/api/state")[1]
+        self.assertTrue(any(abs(x["feed_mm"] - 1727.2) < 1 for x in st["recipes"]))
+
     def test_static_traversal(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port)
         c.request("GET", "/../server.py")

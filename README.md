@@ -10,7 +10,7 @@ proven settings stored in a SQLite database. Python standard library only.
   plunge/ramp, then checks predicted spindle load and tool deflection and reduces
   depth if either is too high.
 - **Saved settings**: record "known-good" cuts and compare them with the calculation.
-- **Machine**: min/max RPM, max feed, spindle power, deflection limit.
+- **Machine**: defaults match the OMIO X8 (2.2 kW spindle, 24,000 rpm, 4,000 mm/min max feed); min/max RPM, max feed, spindle power and deflection limit are editable.
 
 Anyone can use the calculator. Editing needs `ADMIN_PASSWORD`. The Machine tab can download a JSON backup.
 
