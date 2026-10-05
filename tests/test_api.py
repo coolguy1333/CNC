@@ -123,6 +123,9 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(con.execute("SELECT sfm_carbide FROM materials WHERE name='Aluminum 6061'").fetchone()[0], 700)
         st = self.req("GET", "/api/state")[1]
         self.assertTrue(any(abs(x["feed_mm"] - 1727.2) < 1 for x in st["recipes"]))
+        self.assertTrue(any(abs(x["feed_mm"] - 3937) < 1 for x in st["recipes"]))
+        pc = [m for m in st["materials"] if m["name"] == "Polycarbonate"][0]
+        self.assertEqual((pc["sfm_carbide"], pc["fz_ratio"]), (1100, 0.045))
 
     def test_static_traversal(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port)
