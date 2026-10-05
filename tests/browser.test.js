@@ -213,7 +213,9 @@ test("inventory: add, low-stock flag, quick adjust, delete", { skip }, async () 
   assert.equal(await page.locator('#nav [data-badge="inventory"]').innerText(), "1");
   await page.click('tr.low button[data-act="plus"]');
   await page.waitForFunction(() => /\b6\b/.test(document.querySelector("tr.low").innerText));
-  await page.click('tr.low button[data-act="del"]');
+  await page.click('tr.low button[data-act="edit"]');
+  await page.waitForSelector("#dlg[open]");
+  await page.click('#dlg [data-x]:has-text("Delete")');
   await page.waitForSelector("tr.low", { state: "detached" });
   assert.ok(!(await api(page, "GET", "api/state")).inventory.some(i => i.name === "Test screws"));
   assert.deepEqual(page.problems, []);
@@ -240,8 +242,23 @@ test("tool library: add, edit and delete a tool", { skip }, async () => {
   await page.waitForSelector("#dlg .err:not([hidden])");
   assert.match(await page.locator("#dlg .err").innerText(), /Real cutting diameter|actual_mm/i);
   await page.click("#dlg [data-cancel]");
-  await page.click(`button[data-act="del"][data-id="${t.id}"]`);
-  await page.waitForSelector("td >> text=Browser 3 mm", { state: "detached" });
+  // copy: the dialog reopens as a new entry, named "... copy"
+  await page.click(`button[data-act="edit"][data-id="${t.id}"]`);
+  await page.waitForSelector("#dlg[open]");
+  await page.click('#dlg [data-x]:has-text("Make a copy")');
+  await page.waitForFunction(() => /^Add tool/.test((document.querySelector("#dlgTitle") || {}).textContent || ""));
+  assert.equal(await page.inputValue('#dlg [data-f="name"]'), "Browser 3 mm copy");
+  await page.click('#dlg button[type="submit"]');
+  await page.waitForSelector("td >> text=Browser 3 mm copy");
+  // delete (from inside the edit dialog) both of them
+  for (const name of ["Browser 3 mm copy", "Browser 3 mm"]) {
+    const id = (await api(page, "GET", "api/state")).tools.find(x => x.name === name).id;
+    await page.click(`button[data-act="edit"][data-id="${id}"]`);
+    await page.waitForSelector("#dlg[open]");
+    await page.click('#dlg [data-x]:has-text("Delete")');
+    await page.waitForFunction(n => !(document.querySelector("#list") || document.body).innerText.includes(n), name);
+  }
+  assert.ok(!(await api(page, "GET", "api/state")).tools.some(x => /Browser 3 mm/.test(x.name)));
   // the one 400 above was the deliberate bad edit; nothing else may be wrong
   assert.deepEqual(page.problems.filter(p => !/status of 400/.test(p)), []);
   await page.ctx.close();
@@ -280,8 +297,11 @@ test("search and the phone menu", { skip }, async () => {
   assert.equal(await m.locator("#nav").evaluate(n => n.getBoundingClientRect().right <= 0), true, "the menu starts closed");
   await m.click("#menuBtn");
   await m.waitForFunction(() => document.querySelector("#nav").getBoundingClientRect().left >= 0);
+  assert.equal(await m.locator('#nav a[data-id="weight"]').isVisible(), false, "only the folder you're in is open");
+  await m.click('.navhead[data-gh="Shop Calculators"]');
+  assert.equal(await m.locator('#nav a[data-id="cnc"]').isVisible(), false, "opening a folder closes the other one");
   await m.click('#nav a[data-id="weight"]');
-  await m.waitForSelector("#main h1:has-text('Weight')");
+  await m.waitForSelector("#main h1:has-text('Part Weight')");
   assert.equal(await m.evaluate(() => document.body.classList.contains("menu")), false, "the menu closes after choosing a page");
   await m.ctx.close();
 });
@@ -290,9 +310,10 @@ test("a slow page change never steals focus from what you just clicked", { skip 
   const page = await newPage();
   await go(page, "cnc");
   await page.route("**/api/rev", async route => { await wait(500); await route.continue(); });
+  await page.click('.navhead[data-gh="Shop Calculators"]');
   await page.click('#nav a[data-id="weight"]');        // the page swap now waits half a second for the revision check
   await page.focus("#search");                         // and the person moves on before it finishes
-  await page.waitForFunction(() => /Weight/.test((document.querySelector("#main h1") || {}).textContent || ""));
+  await page.waitForFunction(() => /Part Weight/.test((document.querySelector("#main h1") || {}).textContent || ""));
   assert.equal(await page.evaluate(() => document.activeElement.id), "search");
   await page.unroute("**/api/rev");
   await page.evaluate(() => document.activeElement.blur());
@@ -306,6 +327,7 @@ test("clicking through pages quickly always ends on the last one clicked", { ski
   await go(page, "cnc");
   let n = 0;
   await page.route("**/api/rev", async route => { if (n++ === 0) await wait(700); await route.continue(); });  // only the first check is slow
+  await page.click('.navhead[data-gh="Shop Calculators"]');
   await page.click('#nav a[data-id="weight"]');
   await page.click('#nav a[data-id="cutlist"]');
   await page.waitForFunction(() => /Cut List/.test((document.querySelector("#main h1") || {}).textContent || ""));
@@ -547,4 +569,135 @@ test("a tool deleted elsewhere doesn't break the calculator", { skip }, async ()
   assert.ok(!(await b.locator("#f_toolId option", { hasText: "Doomed" }).count()));
   assert.deepEqual(b.problems, []);
   await a.ctx.close(); await b.ctx.close();
+});
+
+// ---------------------------------------------------------------------------------------------- the simpler layout
+test("feeds & speeds asks for the material and endmill; the rest sits under More options", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "cnc");
+  await page.waitForSelector("#out .tile");
+  const asked = [];
+  for (const f of await page.locator("#form .field").all()) if (await f.isVisible()) asked.push(await f.getAttribute("data-for"));
+  assert.deepEqual(asked, ["material", "toolId"]);
+  assert.equal(await page.locator("#form details[data-more]").evaluate(d => d.open), false);
+  // open it, change one thing: the change is counted, the pass count follows, and a reload shows it open
+  await page.click("#form details[data-more] > summary");
+  await page.selectOption("#f_thkPreset", "6.35");
+  assert.match(await page.locator("#form details[data-more] > summary").innerText(), /1 changed/);
+  assert.match(await tileText(page, "Depth per pass"), /4 passes for 0\.25 in/);
+  await page.reload();
+  await page.waitForSelector("#out .tile");
+  assert.equal(await page.locator("#form details[data-more]").evaluate(d => d.open), true);
+  // closing it is remembered too, even with a changed value inside
+  await page.click("#form details[data-more] > summary");
+  await page.reload();
+  await page.waitForSelector("#out .tile");
+  assert.equal(await page.locator("#form details[data-more]").evaluate(d => d.open), false);
+  assert.match(await tileText(page, "Depth per pass"), /4 passes for 0\.25 in/);
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("long advice folds away but warnings never do", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "drive");
+  await page.waitForSelector("#out .tile");
+  const shown = () => page.locator("#out .note:visible").count();
+  assert.equal(await shown(), 2);
+  assert.equal(await page.locator("#out .note.warn:visible").count(), 1, "the breaker warning stays in view");
+  const fold = page.locator("#out details.tips");
+  assert.match(await fold.locator("summary").innerText(), /2 more tips/);
+  await fold.locator("summary").click();
+  assert.equal(await shown(), 4);
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("a hidden box with a problem opens More options by itself", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "check");
+  await page.waitForSelector("#out .verdict");
+  await page.click("#form details[data-more] > summary");
+  await page.fill("#f_doc", "-1");
+  assert.match(await page.locator("#out").innerText(), /can't be negative/);
+  await page.click("#form details[data-more] > summary");              // close it...
+  assert.equal(await page.locator("#form details[data-more]").evaluate(d => d.open), false);
+  await page.click('#form [data-f="material"] button[data-v="polycarbonate"]');   // ...and the next calculation still sees the problem
+  assert.equal(await page.locator("#form details[data-more]").evaluate(d => d.open), true);
+  await page.fill("#f_doc", "0");
+  await page.waitForSelector("#out .verdict");
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("the sidebar shows one folder at a time and flags problems inside a closed one", { skip }, async () => {
+  const page = await newPage();
+  await page.goto(base + "#/cnc");
+  await page.waitForSelector("#nav a");
+  const made = await api(page, "POST", "api/maintenance", { task: "Overdue thing", interval_days: 1, last_done: "2020-01-01" });
+  try {
+    await page.reload();
+    await page.waitForSelector("#out .tile");
+    const open = () => page.$$eval('.navhead[aria-expanded="true"]', hs => hs.map(h => h.dataset.gh));
+    assert.deepEqual(await open(), ["CNC Router"]);
+    const shop = page.locator('.navhead[data-gh="Our Shop"]');
+    assert.equal(await shop.locator(".badge").innerText(), "1", "the closed folder carries its pages' alerts");
+    await shop.click();
+    assert.deepEqual(await open(), ["Our Shop"]);
+    assert.equal(await shop.locator(".badge").isVisible(), false, "no double counting once it's open");
+    assert.equal(await page.locator('#nav [data-badge="maint"]').innerText(), "1");
+    await page.click('#nav a[data-id="maint"]');
+    await page.waitForSelector("#main h1:has-text('Maintenance')");
+    assert.deepEqual(await open(), ["Our Shop"]);
+  } finally {
+    await api(page, "DELETE", "api/maintenance/" + made.id);
+  }
+  await page.ctx.close();
+});
+
+test("hole & tool size shows one job at a time", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "holes");
+  const pane = id => page.locator(`[data-pane="${id}"]`).isVisible();
+  assert.deepEqual([await pane("hole"), await pane("tool"), await pane("fit")], [true, false, false]);
+  await page.click('button[data-mode="tool"]');
+  assert.deepEqual([await pane("hole"), await pane("tool"), await pane("fit")], [false, true, false]);
+  await page.fill("#f_slotW", "0.1811");
+  assert.match(await page.locator("#cOut").innerText(), /Real cutting diameter\s*0\.1811 in/i);
+  await page.reload();                                                       // the choice is remembered
+  await page.waitForSelector("#main h1");
+  assert.deepEqual([await pane("hole"), await pane("tool"), await pane("fit")], [false, true, false]);
+  await page.click('button[data-mode="fit"]');
+  assert.match(await page.locator("#fOut").innerText(), /cut the hole at/i);
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("the cut list follows the in/mm switch at the top", { skip }, async () => {
+  const page = await newPage();
+  await go(page, "cutlist");
+  await page.waitForSelector("#out .tile");
+  assert.equal(await page.inputValue("#f_stock"), "72");
+  assert.match(await page.locator('label[for="f_parts"]').innerText(), /inches/);
+  await page.click('#unitSeg button[data-u="met"]');
+  await page.waitForFunction(() => document.querySelector("#f_stock").value === "1830");
+  assert.match(await page.locator('label[for="f_parts"]').innerText(), /millimetres/);
+  await page.click('#unitSeg button[data-u="imp"]');
+  await page.waitForFunction(() => document.querySelector("#f_stock").value === "72");
+  assert.match(await tileText(page, "Bars to buy"), /3/);
+  assert.deepEqual(page.problems, []);
+  await page.ctx.close();
+});
+
+test("record tables fit the screen, on a desktop and on a phone", { skip }, async () => {
+  for (const opts of [{}, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }]) {
+    const page = await newPage(opts);
+    for (const id of ["tools", "tested", "joblog", "inventory", "maint", "settings"]) {
+      await go(page, id);
+      await wait(100);
+      const clipped = await page.evaluate(() => [...document.querySelectorAll("#main .tw")].filter(e => e.scrollWidth > e.clientWidth + 1).length);
+      assert.equal(clipped, 0, `${id} has a table wider than its card`);
+    }
+    await page.ctx.close();
+  }
 });

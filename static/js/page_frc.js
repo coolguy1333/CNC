@@ -4,22 +4,22 @@
   const { html, $, $$, U, fmt, group, tile, tiles, note, table, calcPage, copyText, store, toast, confirmDialog, download } = App;
   const IN = 25.4, FT = 304.8, G = 9.80665, LBF = 4.4482216152605;
   const motorOpts = Object.entries(Frc.MOTORS).map(([k, m]) => [k, m.name]);
-  const motorNote = html`${note("info", "Motor numbers are the published 12 V figures. Real motors vary by several percent, and the battery sags under load, so treat results as a best case.")}`;
+  const motorFoot = html`<p class="mut small foot">Motor figures are the published 12 V numbers. A real robot comes out a little slower, so treat these as a best case.</p>`;
 
   // ================================================================== Drivetrain
   calcPage({
     id: "drive", title: "Drivetrain", keywords: "drive speed gear ratio swerve tank wheel traction acceleration current kraken neo falcon cim",
-    intro: "Top speed, how hard it pushes, how fast it accelerates, and how much current that costs.",
+    intro: "Top speed, pushing force, acceleration and the current it costs.",
     fields: [
       { id: "motor", label: "Motor", type: "select", def: "kraken_x60", options: motorOpts },
       { id: "n", label: "Motors driving the wheels", type: "int", def: 4, min: 1, max: 12, dp: 0 },
       { id: "ratio", label: "Gear ratio (motor : wheel)", type: "num", def: 6.75, min: 0.1, hint: "6.75 means the motor turns 6.75 times per wheel turn." },
       { id: "wheel", label: "Wheel diameter", type: "len", def: 101.6 },
       { id: "mass", label: "Robot weight (with bumpers and battery)", type: "mass", def: 61.2349 },
-      { id: "eff", label: "Drivetrain efficiency", type: "num", def: 0.9, min: 0.3, max: 1, hint: "0.85–0.95 for good gearing." },
-      { id: "mu", label: "Wheel grip (friction coefficient)", type: "num", def: 1, min: 0.1, max: 2, hint: "About 1.0 on carpet with good tread. Lower on slick floors." },
-      { id: "volts", label: "Battery voltage under load", type: "num", unit: "V", def: 12, min: 6, max: 14 },
-      { id: "ilim", label: "Current limit per motor", type: "num", unit: "A", def: 0, hint: "0 = none. Software limits of 40–60 A are common." },
+      { id: "eff", adv: true, label: "Drivetrain efficiency", type: "num", def: 0.9, min: 0.3, max: 1, hint: "0.85–0.95 for good gearing." },
+      { id: "mu", adv: true, label: "Wheel grip (friction coefficient)", type: "num", def: 1, min: 0.1, max: 2, hint: "About 1.0 on carpet with good tread. Lower on slick floors." },
+      { id: "volts", adv: true, label: "Battery voltage under load", type: "num", unit: "V", def: 12, min: 6, max: 14 },
+      { id: "ilim", adv: true, label: "Current limit per motor", type: "num", unit: "A", def: 0, hint: "0 = none. Software limits of 40–60 A are common." },
     ],
     compute(v) {
       if (!(v.mass > 0) || !(v.wheel > 0) || !(v.ratio > 0) || !(v.n >= 1)) return note("bad", "Fill in the motor count, ratio, wheel size and weight.");
@@ -36,7 +36,7 @@
         ${r.tractionLimited ? note("info", `The wheels slip before the motors run out of torque (grip limit ${U.fmt("force", r.traction, 0)}). More motors or a lower ratio won't help; a current limit would save battery.`) : note("info", "The motors, not the wheels, limit pushing force here. A lower ratio or more motors would push harder.")}
         ${r.totalAmpsAtTraction > 120 ? note("warn", `Pushing that hard draws ${fmt(r.totalAmpsAtTraction, 0)} A, more than the 120 A main breaker allows for long. Set a current limit.`) : ""}
         ${r.totalAmpsAtTraction > 60 && !(v.ilim > 0) ? note("info", "That much current also sags the battery and can brown the robot out. Many teams limit drive current to 40–60 A per motor.") : ""}
-        ${note("info", "A good rule of thumb: real on-field top speed is about 80–85% of free speed.")}${motorNote}</div>`;
+        ${note("info", "A good rule of thumb: real on-field top speed is about 80–85% of free speed.")}</div>${motorFoot}`;
     },
   });
 
@@ -45,9 +45,9 @@
     { id: "motor", label: "Motor", type: "select", def: d.motor, options: motorOpts },
     { id: "n", label: "Number of motors", type: "int", def: d.n, min: 1, max: 8, dp: 0 },
     { id: "ratio", label: "Gear ratio (motor : mechanism)", type: "num", def: d.ratio, min: 0.1, hint: d.ratioHint },
-    { id: "volts", label: "Battery voltage", type: "num", unit: "V", def: 12, min: 6, max: 14 },
-    { id: "ilim", label: "Current limit per motor", type: "num", unit: "A", def: 0, hint: "0 = none." },
-    { id: "eff", label: "Efficiency", type: "num", def: d.eff || 0.85, min: 0.3, max: 1 },
+    { id: "volts", adv: true, label: "Battery voltage", type: "num", unit: "V", def: 12, min: 6, max: 14 },
+    { id: "ilim", adv: true, label: "Current limit per motor", type: "num", unit: "A", def: 0, hint: "0 = none." },
+    { id: "eff", adv: true, label: "Efficiency", type: "num", def: d.eff || 0.85, min: 0.3, max: 1 },
   ];
   const baseOf = v => ({ motor: Frc.MOTORS[v.motor], n: v.n, ratio: v.ratio, volts: v.volts || 12, ilim: v.ilim || 0, eff: v.eff || 0.85 });
   const pctNote = p => (p > 0.5 ? note("warn", `The motors are working at ${fmt(p * 100, 0)}% of stall torque. That heats them up fast: add reduction or another motor.`) : p > 0.25 ? note("info", `The motors are at ${fmt(p * 100, 0)}% of stall torque.`) : "");
@@ -55,7 +55,7 @@
 
   calcPage({
     id: "elevator", title: "Elevator", keywords: "elevator lift linear rigging cascade spool pulley motor current time gearing",
-    intro: "Can this motor and gearing lift the load, how much current does it draw, and how long does the full travel take?",
+    intro: "Can the motors lift the load? How much current, and how long for the full travel?",
     fields: [...mechCommon({ motor: "neo", n: 2, ratio: 20, ratioHint: "Motor turns per spool turn." }),
       { id: "spool", label: "Spool or pulley diameter", type: "len", def: 38.1 },
       { id: "mass", label: "Load being lifted", type: "mass", def: 6.8 },
@@ -73,13 +73,13 @@
         tile("Time for the full travel", e.time ? fmt(e.time, 2) + " s" : "–", "at full voltage, no braking"),
         tile("Heaviest load it can hold", U.fmt("mass", e.maxMassKg, 1), "at stall or your current limit"),
       ])}<div class="notes">${e.canLift ? pctNote(e.percentOfStall) : note("bad", "The motors can't hold this load at this gearing. Add reduction, more motors, or a bigger rig factor.")}
-        ${note("info", "Ignores friction, rope stretch and battery sag, and the moving stages' own weight. Add them to the load.")}${motorNote}</div>`;
+        ${note("info", "Ignores friction, rope stretch and battery sag, and the moving stages' own weight. Add them to the load.")}</div>${motorFoot}`;
     },
   });
 
   calcPage({
     id: "arm", title: "Arm", keywords: "arm pivot shoulder wrist gravity torque holding swing time gearing motor current",
-    intro: "Can the motor hold the arm level, how much current does that take, and how long does a swing take?",
+    intro: "Can the motor hold the arm level? How much current, and how long is a swing?",
     fields: [...mechCommon({ motor: "kraken_x60", n: 1, ratio: 100, ratioHint: "Motor turns per arm turn." }),
       { id: "length", label: "Arm length (pivot to end)", type: "len", def: 600 },
       { id: "armMass", label: "Arm weight", type: "mass", def: 2.7 },
@@ -98,7 +98,7 @@
         tile("Time to swing", a.time ? fmt(a.time, 2) + " s" : "never gets there", `${fmt(v.a0, 0)}° → ${fmt(v.a1, 0)}°, full voltage, no braking`),
         tile("Arm inertia", fmt(a.inertia, 3) + " kg·m²", "about the pivot"),
       ])}<div class="notes">${a.canHold ? pctNote(a.percentOfStall) : note("bad", "The motors can't hold the arm level at this gearing. Add reduction or motors, or shorten and lighten the arm.")}
-        ${note("info", "Gravity is worst when the arm is level and zero when it points straight up or down. Real swings are slower because you slow down to stop at the end.")}${motorNote}</div>`;
+        ${note("info", "Gravity is worst when the arm is level and zero when it points straight up or down. Real swings are slower because you slow down to stop at the end.")}</div>${motorFoot}`;
     },
   });
 
@@ -108,7 +108,7 @@
     fields: [...mechCommon({ motor: "kraken_x60", n: 2, ratio: 1.5, ratioHint: "Motor turns per wheel turn. Below 1 spins the wheel faster than the motor.", eff: 0.95 }),
       { id: "wmass", label: "Wheel weight", type: "mass", def: 0.45 },
       { id: "wdia", label: "Wheel diameter", type: "len", def: 101.6 },
-      { id: "jov", label: "Inertia override (optional)", type: "num", unit: "kg·m²", def: 0, hint: "0 = treat the wheel as a solid disc (½ m r²). Use CAD's number for heavier or hollow wheels." },
+      { id: "jov", adv: true, label: "Inertia override", type: "num", unit: "kg·m²", def: 0, hint: "0 = treat the wheel as a solid disc (½ m r²). Use CAD's number for heavier or hollow wheels." },
       { id: "target", label: "Target speed", type: "num", unit: "wheel rpm", def: 3000, dp: 0 }],
     compute(v) {
       const bad = needMotors(v);
@@ -125,14 +125,14 @@
         tile("Rim speed", U.both("speed", rim)[0], U.both("speed", rim)[1]),
       ])}<div class="notes">${f.ok ? "" : note("bad", "The motors can't spin the wheel that fast at this ratio. Lower the ratio (spin it faster) or lower the target.")}
         ${f.ok && v.target > f.freeWheelRpm * 0.9 ? note("warn", "That's close to the motors' free speed, so the last bit takes forever and the speed will sag when a game piece hits it.") : ""}
-        ${note("info", "More inertia holds speed better after a shot but takes longer to spin up. Efficiency here is the drive's, mostly belts and gears.")}${motorNote}</div>`;
+        ${note("info", "More inertia holds speed better after a shot but takes longer to spin up. Efficiency here is the drive's, mostly belts and gears.")}</div>${motorFoot}`;
     },
   });
 
   // ================================================================== Belts & chain
   calcPage({
     id: "belts", title: "Belts & Chain", keywords: "belt chain center distance sprocket pulley teeth length links timing htd gt2 tension pitch",
-    intro: "Centre distance for a belt or chain you have, or the belt/chain you need for a given spacing.",
+    intro: "Centre distance for a belt or chain, or the belt or chain you need for a given spacing.",
     fields: [
       { id: "tab", label: "Drive type", type: "seg", def: "belt", options: [["belt", "Timing belt"], ["chain", "Chain"]] },
       { id: "pitchB", label: "Belt pitch", type: "select", number: true, def: 5, show: v => v.tab === "belt", options: Object.entries(Frc.BELT_PITCH).map(([k, p]) => [p, k]) },
@@ -182,14 +182,14 @@
   const awgOpts = Object.keys(Frc.AWG).map(Number).map(g => [g, g + " AWG"]);
   calcPage({
     id: "elec", title: "Wiring & Power", keywords: "wire gauge awg voltage drop breaker current battery sag resistance power distribution fuse",
-    intro: "How much voltage a wire wastes, what gauge a breaker needs, and how far the battery sags.",
+    intro: "Voltage lost in a wire, the wire a breaker needs, and battery sag.",
     fields: [
       { id: "tab", label: "What do you need?", type: "seg", def: "drop", options: [["drop", "Wire drop"], ["breaker", "Breaker → wire"], ["battery", "Battery sag"]] },
       { id: "awg", label: "Wire gauge", type: "select", number: true, def: 12, options: awgOpts, show: v => v.tab === "drop" },
       { id: "len", label: "Wire length, one way", type: "len", def: 914.4, show: v => v.tab === "drop", hint: "The calculation counts the return wire too." },
       { id: "amps", label: "Current", type: "num", unit: "A", def: 40, show: v => v.tab === "drop" || v.tab === "battery" },
-      { id: "volts", label: "System voltage", type: "num", unit: "V", def: 12, show: v => v.tab === "drop" },
-      { id: "maxDrop", label: "Acceptable drop", type: "num", unit: "%", def: 3, show: v => v.tab === "drop" },
+      { id: "volts", adv: true, label: "System voltage", type: "num", unit: "V", def: 12, show: v => v.tab === "drop" },
+      { id: "maxDrop", adv: true, label: "Acceptable drop", type: "num", unit: "%", def: 3, show: v => v.tab === "drop" },
       { id: "breaker", label: "Breaker rating", type: "select", number: true, def: 40, show: v => v.tab === "breaker", options: [[120, "120 A (main)"], [40, "40 A"], [30, "30 A"], [20, "20 A"], [10, "10 A"], [5, "5 A or less"]] },
       { id: "voc", label: "Battery voltage, no load", type: "num", unit: "V", def: 12.6, show: v => v.tab === "battery", hint: "A rested, fully charged battery reads about 12.6–13 V." },
       { id: "rint", label: "Battery internal resistance", type: "num", unit: "Ω", def: 0.015, show: v => v.tab === "battery", hint: "Roughly 0.010–0.020 Ω for a healthy battery. Measure yours with a battery analyzer." },
@@ -230,14 +230,14 @@
   // ================================================================== Pneumatics
   calcPage({
     id: "pneu", title: "Pneumatics", keywords: "pneumatic cylinder force air pressure psi tank compressor piston bore stroke",
-    intro: "Cylinder force and how much stored air each stroke uses.",
+    intro: "Cylinder force, and how much stored air each stroke uses.",
     fields: [
       { id: "bore", label: "Bore (cylinder inside diameter)", type: "len", def: 38.1 },
       { id: "rod", label: "Rod diameter", type: "len", def: 9.525 },
       { id: "stroke", label: "Stroke", type: "len", def: 152.4 },
       { id: "psi", label: "Working pressure", type: "press", def: 413.685, min: 0, hint: "FRC rules cap the working side at 60 psi." },
-      { id: "tank", label: "Storage tank volume", type: "num", unit: "in³", def: 0, hint: "0 = skip. Add up all tanks. Stored pressure is capped at 120 psi." },
-      { id: "cycles", label: "Strokes (out and back) per match", type: "int", def: 20, min: 0, dp: 0 },
+      { id: "tank", adv: true, label: "Storage tank volume", type: "num", unit: "in³", def: 0, hint: "0 = skip. Add up all tanks. Stored pressure is capped at 120 psi." },
+      { id: "cycles", adv: true, label: "Strokes (out and back) per match", type: "int", def: 20, min: 0, dp: 0 },
     ],
     compute(v) {
       if (!(v.bore > 0) || !(v.stroke > 0) || !(v.rod >= 0) || v.rod >= v.bore) return note("bad", "Check the bore, rod and stroke.");
@@ -265,9 +265,9 @@
       const total = list.reduce((s, i) => s + i.kg * i.qty, 0);
       const pct = Math.min(100, (total / limitKg) * 100);
       root.innerHTML = html`
+        <h1>Weight Budget</h1>
+        <p class="mut lead">Add up the robot as you design it. The limit (${fmt(limitKg / 0.45359237, 0)} lb) is for the robot <b>without</b> bumpers and battery; change it in Settings &amp; Backups. This list is saved in this browser only.</p>
         <section class="card">
-          <h1>Weight Budget</h1>
-          <p class="mut">Add up the robot as you design it. The limit is for the robot <b>without</b> bumpers and battery (${fmt(limitKg / 0.45359237, 0)} lb; change it in Machine &amp; Data). This list lives in this browser only.</p>
           ${tiles([tile("Total", U.fmt("mass", total, 2), U.isImp() ? `${fmt(total, 2)} kg` : `${fmt(total / 0.45359237, 2)} lb`, "main"),
             tile("Limit", U.fmt("mass", limitKg, 1), "", ""), tile(total > limitKg ? "Over by" : "Remaining", U.fmt("mass", Math.abs(limitKg - total), 2), "", total > limitKg ? "main bad" : "main")])}
           <div class="meter" role="img" aria-label="${fmt(pct, 0)} percent of the weight limit used"><span id="meterFill" data-w="${pct}" class="${total > limitKg ? "over" : pct > 90 ? "near" : ""}"></span></div>
@@ -278,7 +278,7 @@
             <div class="field"><label for="iq">How many</label><input id="iq" type="number" inputmode="numeric" step="1" min="1" value="1"></div>
             <button class="btn pri" type="submit">Add</button>
           </form>
-          ${list.length ? table(["Item", "Each", "Qty", "Total", ""], list.map((i, n) => [i.name, U.fmt("mass", i.kg, 3), i.qty, U.fmt("mass", i.kg * i.qty, 3), html`<button class="btn sm del" data-del="${n}" aria-label="Remove ${i.name}">Remove</button>`])) : html`<p class="mut">Nothing yet. Add items above, or use “Add to weight budget” in Weight &amp; Stock.</p>`}
+          ${list.length ? table(["Item", "Each", "Qty", "Total", ""], list.map((i, n) => [i.name, U.fmt("mass", i.kg, 3), i.qty, U.fmt("mass", i.kg * i.qty, 3), html`<button class="btn sm del" data-del="${n}" aria-label="Remove ${i.name}">Remove</button>`])) : html`<p class="mut">Nothing yet. Add items above, or use “Add to weight budget” on the Part Weight page.</p>`}
           <div class="bar actions"><button class="btn" id="copyB">Copy list</button><button class="btn" id="csvB">Download CSV</button><button class="btn del" id="clearB">Clear all</button></div>
           ${note("info", "Not counted toward the limit: the bumpers and the battery (and its half of the Anderson connector). Robot plus bumpers is also capped, at 135 lb in the 2025 and 2026 seasons. Always check the current manual.")}
         </section>`.s;

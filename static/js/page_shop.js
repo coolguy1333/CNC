@@ -10,7 +10,7 @@
   const threadOpts = Shop.ALL_THREADS.map(t => [t.name, t.name + (t.fine ? " (fine)" : "")]);
   calcPage({
     id: "drilltap", title: "Drill, Tap & Hardware", keywords: "tap drill clearance counterbore screw thread 10-32 1/4-20 m5 m4 shcs socket head bolt hole",
-    intro: "Pick a screw. Get the tap drill, the clearance hole, and the counterbore for a socket head cap screw.",
+    intro: "Pick a screw. Get the tap drill, clearance hole and counterbore.",
     fields: [
       { id: "thread", label: "Screw / thread", type: "select", def: "#10-32", options: threadOpts },
       { id: "tap", label: "Tap type", type: "seg", def: "cut", options: [["cut", "Cutting tap"], ["form", "Thread-forming tap"]] },
@@ -29,21 +29,22 @@
         ${tiles([
           tile(forming ? "Hole for forming tap" : "Tap drill", best.label, dia(best.dia) + (best.percent != null ? ` · ${fmt(best.percent, 0)}% thread` : ""), "main"),
           ...(cl ? (cl.system === "imperial" ? [
-            tile("Clearance, free fit", cl.freeDrill, dia(cl.free)), tile("Clearance, close fit", cl.closeDrill, dia(cl.close))] : [
-            tile("Clearance, normal", fmt(cl.medium, 1) + " mm", `${inch(cl.medium)} · fine ${fmt(cl.fine, 1)}, loose ${fmt(cl.coarse, 1)}`)]) : []),
+            tile("Clearance, free fit", cl.freeDrill, dia(cl.free), "main"), tile("Clearance, close fit", cl.closeDrill, dia(cl.close), "main")] : [
+            tile("Clearance, normal", fmt(cl.medium, 1) + " mm", `${inch(cl.medium)} · fine ${fmt(cl.fine, 1)}, loose ${fmt(cl.coarse, 1)}`, "main")]) : []),
           ...(cb ? [tile("Socket head counterbore", cb.system === "imperial" ? `Ø${fmt(cb.dia, 4)} in` : `Ø${fmt(cb.dia, 1)} mm`,
-            cb.system === "imperial" ? `${fmt(cb.depth, 3)} in deep · head Ø${fmt(cb.head, 3)} × ${fmt(cb.height, 3)} in` : `${fmt(cb.depth, 2)} mm deep · head Ø${fmt(cb.head, 1)} × ${fmt(cb.height, 1)} mm`)] : []),
+            cb.system === "imperial" ? `${fmt(cb.depth, 3)} in deep · head Ø${fmt(cb.head, 3)} × ${fmt(cb.height, 3)} in` : `${fmt(cb.depth, 2)} mm deep · head Ø${fmt(cb.head, 1)} × ${fmt(cb.height, 1)} mm`, "main")] : []),
         ])}
-        ${td.drills.length > 1 ? html`<h3>Other drills that work</h3>${table(["Drill", "Size", forming ? "" : "Thread"], td.drills.map(d => [d.label, dia(d.dia), d.percent != null ? fmt(d.percent, 0) + "%" : ""]))}` : ""}
+        ${td.drills.length > 1 ? html`<details class="more"><summary>Other drills that work</summary>${table(["Drill", "Size", forming ? "" : "Thread"], td.drills.map(d => [d.label, dia(d.dia), d.percent != null ? fmt(d.percent, 0) + "%" : ""]))}</details>` : ""}
         <div class="notes">
           ${note("info", forming ? "Thread-forming (roll) taps push the metal instead of cutting it, so no chips. Good in aluminum. Use lubricant, and don't use them in polycarbonate." : "Aluminum: use cutting fluid and back the tap out every half turn to break the chip. Blind holes: drill a few threads deeper than you tap.")}
           ${note("info", "Polycarbonate is a poor thing to tap and cracks easily. Use a through-hole with a bolt and nut, or a rivet.")}
           ${cb ? note("info", "Counterbore = head diameter plus a little clearance, and a bit deeper than the head is tall. Cut a test hole if a part has to fit tight.") : ""}
           ${cl && cl.system === "imperial" ? note("info", "Clearance sizes are the standard close-fit and free-fit drills (Machinery's Handbook).") : note("info", "Metric clearance holes follow ISO 273 (fine / normal / loose).")}
         </div>
-        <h3>Pop (blind) rivet holes</h3>
-        ${table(["Rivet", "Drill", "Hole"], RIVETS.map(([r, d, dia]) => [r, d, `${fmt(dia, 4)} in (${fmt(dia * IN, 2)} mm)`]))}
-        <p class="mut small">Standard hole sizes from rivet suppliers. Aluminum rivets in aluminum plate are the usual FRC combination.</p>`;
+        <details class="more"><summary>Pop (blind) rivet holes</summary>
+          ${table(["Rivet", "Drill", "Hole"], RIVETS.map(([r, d, dia]) => [r, d, `${fmt(dia, 4)} in (${fmt(dia * IN, 2)} mm)`]))}
+          <p class="mut small">Standard hole sizes from rivet suppliers. Aluminum rivets in aluminum plate are the usual FRC combination.</p>
+        </details>`;
     },
   });
 
@@ -51,7 +52,7 @@
   const MAT2 = [["aluminum", "Aluminum 6061"], ["polycarbonate", "Polycarbonate"]];
   calcPage({
     id: "manual", title: "Mill, Drill, Lathe & Saw", keywords: "manual mill drill press lathe bandsaw sfm rpm tpi blade speed feed chip load surface speed",
-    intro: "Spindle speeds and feeds for the manual machines, plus bandsaw blade choice. Starting points: adjust by sound and chip colour.",
+    intro: "Speeds and feeds for the mill, drill press, lathe and bandsaw. Starting points: adjust by sound.",
     fields: [
       { id: "tab", label: "Machine", type: "seg", def: "mill", options: [["mill", "Mill (end mill)"], ["drill", "Drill"], ["lathe", "Lathe"], ["saw", "Saw blade"]] },
       { id: "mat", label: "Material", type: "select", def: "aluminum", options: MAT2, show: v => v.tab !== "saw" },
@@ -60,13 +61,13 @@
       { id: "flutes", label: "Flutes", type: "int", def: 2, min: 1, max: 12, dp: 0, show: v => v.tab === "mill" },
       { id: "workDia", label: "Work diameter", type: "len", def: 25.4, show: v => v.tab === "lathe" },
       { id: "fpr", label: "Feed per revolution", type: "num", unit: "in/rev", def: 0.005, show: v => v.tab === "lathe", hint: "0.005 in/rev roughing, 0.002 finishing." },
-      { id: "sfm", label: "Surface speed override", type: "num", unit: "SFM", def: 0, show: v => v.tab !== "saw", hint: "0 = use the recommended value." },
-      { id: "ipt", label: "Chipload override", type: "num", unit: "in/tooth", def: 0, show: v => v.tab === "mill", hint: "0 = use the recommended value." },
-      { id: "maxRpm", label: "Machine's top speed", type: "num", unit: "rpm", def: 0, dp: 0, show: v => v.tab !== "saw", hint: "0 = no limit. If the machine can't spin fast enough, feed is scaled down with it." },
+      { id: "sfm", adv: true, label: "Surface speed override", type: "num", unit: "SFM", def: 0, show: v => v.tab !== "saw", hint: "0 = use the recommended value." },
+      { id: "ipt", adv: true, label: "Chipload override", type: "num", unit: "in/tooth", def: 0, show: v => v.tab === "mill", hint: "0 = use the recommended value." },
+      { id: "maxRpm", adv: true, label: "Machine's top speed", type: "num", unit: "rpm", def: 0, dp: 0, show: v => v.tab !== "saw", hint: "0 = no limit. If the machine can't spin fast enough, feed is scaled down with it." },
       { id: "thk", label: "Thickness at the cut", type: "len", def: 1.5875, show: v => v.tab === "saw", hint: "Tube wall, or the plate thickness you're cutting through." },
       { id: "teeth", label: "Teeth in the cut at once", type: "int", def: 3, min: 2, max: 8, dp: 0, show: v => v.tab === "saw", hint: "At least 3 is the usual rule; fewer teeth can snag on thin wall." },
-      { id: "wheel", label: "Bandsaw wheel diameter (optional)", type: "len", def: 0, show: v => v.tab === "saw" },
-      { id: "bsRpm", label: "Bandsaw wheel rpm (optional)", type: "num", unit: "rpm", def: 0, show: v => v.tab === "saw" },
+      { id: "wheel", adv: true, label: "Bandsaw wheel diameter", type: "len", def: 0, show: v => v.tab === "saw" },
+      { id: "bsRpm", adv: true, label: "Bandsaw wheel rpm", type: "num", unit: "rpm", def: 0, show: v => v.tab === "saw" },
     ],
     compute(v) {
       const capSpeed = (rpm) => (v.maxRpm > 0 && rpm > v.maxRpm ? { rpm: v.maxRpm, capped: true } : { rpm, capped: false });
@@ -145,8 +146,8 @@
     ["pc1/4", "1/4 in polycarbonate", { shape: "plate", thickness: 6.35, mat: "polycarbonate" }],
   ];
   calcPage({
-    id: "weight", title: "Weight & Stock", keywords: "weight mass tube plate sheet aluminum polycarbonate density pounds kg budget rod angle",
-    intro: "How much does that piece weigh? Add parts to the robot weight budget as you design.",
+    id: "weight", title: "Part Weight", keywords: "weight mass tube plate sheet aluminum polycarbonate density pounds kg budget rod angle",
+    intro: "How much does that piece weigh? Add it to the robot weight budget as you design.",
     fields: [
       { id: "preset", label: "Common stock", type: "select", wide: true, def: "", options: [["", "Pick one, or enter sizes below…"], ...STOCK.map(s => [s[0], s[1]])] },
       { id: "shape", label: "Shape", type: "select", wide: true, def: "recttube", options: SHAPES },
@@ -221,19 +222,17 @@
   }
   calcPage({
     id: "cutlist", title: "Cut List", keywords: "cut list stock bars tube length optimizer nesting kerf waste saw plan 1d",
-    intro: "Type the pieces you need. It works out how to cut them from standard stock bars with the least waste.",
+    intro: "List the pieces you need. Get the fewest stock bars and the cuts for each.",
     fields: [
-      { id: "units", label: "Type lengths in", type: "seg", def: store.get("units", "imp") === "met" ? "mm" : "in", options: [["in", "Inches"], ["mm", "Millimetres"]] },
-      { id: "stock", label: "Stock bar length", type: "num", unit: v => unitName(v), def: 72, hint: "72 in (6 ft) and 96 in (8 ft) are common." },
-      { id: "kerf", label: "Saw cut width (kerf)", type: "num", unit: v => unitName(v), def: 0.0625 },
-      { id: "trim", label: "Squaring cut at each end", type: "num", unit: v => unitName(v), def: 0.25, hint: "Waste from squaring each end of a bar. 0 if the ends are already good." },
-      { id: "parts", label: "Pieces needed", type: "textarea", rows: 8, max: 4000, wide: true, def: "30 x 2\n20 x 3\n11-1/2 x 4, brace", hint: "One per line: length × quantity, then an optional name. Fractions are fine: 12-1/2 x 4" },
+      { id: "units", type: "text", def: "in", hidden: true },   // remembers which unit the numbers below are in
+      { id: "stock", label: "Stock bar length", type: "num", unit: v => unitName(v), def: 72, hint: v => (v.units === "mm" ? "1830 mm (6 ft) and 2440 mm (8 ft) are common." : "72 in (6 ft) and 96 in (8 ft) are common.") },
+      { id: "parts", label: v => `Pieces needed (lengths in ${v.units === "mm" ? "millimetres" : "inches"})`, type: "textarea", rows: 8, max: 4000, wide: true, def: "30 x 2\n20 x 3\n11-1/2 x 4, brace", hint: "One per line: length × quantity, then an optional name. Fractions are fine: 12-1/2 x 4. Change units with the in/mm switch at the top." },
+      { id: "kerf", adv: true, label: "Saw cut width (kerf)", type: "num", unit: v => unitName(v), def: 0.0625 },
+      { id: "trim", adv: true, label: "Squaring cut at each end", type: "num", unit: v => unitName(v), def: 0.25, hint: "Waste from squaring each end of a bar. 0 if the ends are already good." },
     ],
-    onChange(id, v) {
-      if (id === "units") {
-        if (v.units === "mm") Object.assign(v, { stock: 1830, kerf: 1.6, trim: 6 }); else Object.assign(v, { stock: 72, kerf: 0.0625, trim: 0.25 });
-        return "redraw";
-      }
+    init(v) {   // the in/mm switch at the top decides the units; swap the starting numbers when it changes
+      const want = U.isImp() ? "in" : "mm";
+      if (v.units !== want) { v.units = want; Object.assign(v, want === "mm" ? { stock: 1830, kerf: 1.6, trim: 6 } : { stock: 72, kerf: 0.0625, trim: 0.25 }); }
     },
     compute(v) {
       const k = v.units === "mm" ? 1 : IN;      // typed unit -> mm
@@ -241,7 +240,7 @@
       const { parts, errors } = parseParts(v.parts || "", v.units);
       const r = Shop.cutList({ stock: (v.stock * k) / IN, kerf: ((v.kerf || 0) * k) / IN, trim: ((v.trim || 0) * k) / IN, parts: parts.map(p => ({ len: p.len / IN, qty: p.qty, name: p.name })) });
       const show = inchVal => (v.units === "mm" ? fmt(inchVal * IN, 1) : fmt(inchVal, 3));
-      if (!parts.length && !errors.length) return note("info", "Type your pieces on the left.");
+      if (!parts.length && !errors.length) return note("info", "List your pieces on the left.");
       const bars = r.bars.map((bar, i) => html`<div class="barrow"><div class="barlabel">Bar ${i + 1}</div><div class="stockbar" aria-label="Bar ${i + 1}">${bar.parts.map(p => html`<span class="seg-part" data-w="${(p.len / (v.stock * k / IN)) * 100}" title="${show(p.len)}${p.name ? " " + p.name : ""}">${show(p.len)}</span>`)}<span class="seg-waste" data-w="${(bar.waste / (v.stock * k / IN)) * 100}"></span></div>
         <div class="barnote mut small">${bar.parts.map(p => show(p.len) + (p.name ? " " + p.name : "")).join(" + ")} — leftover ${show(bar.offcut)}</div></div>`);
       return html`<h2>Result</h2>${tiles([
@@ -268,13 +267,13 @@
   // ================================================================== Sheet bending
   calcPage({
     id: "bend", title: "Sheet Bending", keywords: "bend allowance deduction k-factor flat pattern radius brake aluminum 5052 6061 polycarbonate",
-    intro: "Flat length for a part bent on the brake, and a warning if the radius is too tight for the alloy.",
+    intro: "Flat length for a part bent on the brake, and a warning if the radius is too tight.",
     fields: [
       { id: "alloy", label: "Alloy", type: "select", wide: true, def: "5052-H32", options: [["5052-H32", "5052-H32 (bends well)"], ["6061-T6", "6061-T6 (cracks easily)"], ["other", "Other aluminum"]] },
       { id: "t", label: "Thickness", type: "len", def: 1.5875 },
       { id: "r", label: "Inside bend radius", type: "len", def: 1.5875, hint: "What the tooling gives you. For air bending it's roughly the die opening divided by 6." },
       { id: "angle", label: "Bend angle", type: "num", unit: "°", def: 90, min: 1, max: 179, dp: 0, hint: "How far the metal turns: 90 for a square corner." },
-      { id: "k", label: "K-factor", type: "num", def: 0.4, min: 0.2, max: 0.6, hint: "Where the neutral line sits. 0.40 for 5052 and 0.42 for 6061 are typical for air bending." },
+      { id: "k", adv: true, label: "K-factor", type: "num", def: 0.4, min: 0.2, max: 0.6, hint: "Where the neutral line sits. 0.40 for 5052 and 0.42 for 6061 are typical for air bending." },
       { id: "bends", label: "Number of bends", type: "seg", number: true, def: 1, options: [[1, "1 (L shape)"], [2, "2 (U channel)"]] },
       { id: "a", label: "Leg A (outside)", type: "len", def: 25.4 },
       { id: "b", label: "Leg B (outside)", type: "len", def: 50.8 },
@@ -295,7 +294,7 @@
         tile("Setback", U.fmt("len", b.setback, 4), "from the tangent line to the outside corner"),
       ])}<div class="notes">
         ${ratio < spec.minR - 1e-9 ? note("bad", `Radius is ${fmt(ratio, 2)} × thickness. ${v.alloy} wants at least ${spec.minR} ×: expect cracking on the outside of the bend.`) : note("ok", `Radius is ${fmt(ratio, 2)} × thickness, fine for ${v.alloy}.`)}
-        ${spec.note ? note("info", spec.note) : ""}
+        ${spec.note && v.alloy !== "5052-H32" ? note("info", spec.note) : ""}
         ${note("info", "Bend across the grain when you can. Always test on a scrap of the same sheet: K-factor depends on the tooling and the lot.")}
         ${note("info", `Polycarbonate sheet: cold-bend only with a radius of at least ${Shop.POLY_COLD_BEND_RADIUS} × its thickness (${U.fmt("len", v.t * Shop.POLY_COLD_BEND_RADIUS, 1)} here), or heat-form it. Tight cold bends crack.`)}</div>`;
     },
